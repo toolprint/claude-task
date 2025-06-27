@@ -147,7 +147,7 @@ pub async fn setup_credentials_and_config(task_base_home_dir: &str, debug: bool)
         .await
         .context("Failed to extract keychain credentials")?;
 
-    // Write credentials to file
+    // Write credentials to file in .claude directory
     let credentials_path = format!("{}/.credentials.json", claude_dir);
     fs::write(&credentials_path, credentials).context("Failed to write credentials file")?;
 
@@ -158,7 +158,7 @@ pub async fn setup_credentials_and_config(task_base_home_dir: &str, debug: bool)
     let filtered_config =
         read_and_filter_claude_config().context("Failed to read and filter claude config")?;
 
-    // Write filtered config
+    // Write filtered config to base directory (not inside .claude folder)
     let filtered_json = serde_json::to_string_pretty(&filtered_config)
         .context("Failed to serialize filtered config")?;
 
@@ -187,12 +187,12 @@ async fn create_docker_home_volume(base_dir: &str) -> Result<()> {
 
     // First, try to remove existing volume if it exists
     let _ = Command::new("docker")
-        .args(&["volume", "rm", "claude-task-home"])
+        .args(["volume", "rm", "claude-task-home"])
         .output();
 
     // Create the Docker volume with bind mount
     let output = Command::new("docker")
-        .args(&[
+        .args([
             "volume",
             "create",
             "--driver",
@@ -228,7 +228,7 @@ async fn inspect_docker_volume_contents() -> Result<()> {
 
     // Run a temporary container to inspect the volume contents
     let output = Command::new("docker")
-        .args(&[
+        .args([
             "run",
             "--rm",
             "-v",
@@ -261,7 +261,7 @@ async fn inspect_docker_volume_contents() -> Result<()> {
 
     // Also show directory structure
     let tree_output = Command::new("docker")
-        .args(&[
+        .args([
             "run",
             "--rm",
             "-v",
@@ -284,7 +284,7 @@ async fn inspect_docker_volume_contents() -> Result<()> {
                 } else {
                     let depth = path.matches('/').count();
                     let indent = "  ".repeat(depth);
-                    let name = path.split('/').last().unwrap_or(path);
+                    let name = path.split('/').next_back().unwrap_or(path);
                     println!("{}├── {}", indent, name);
                 }
             }

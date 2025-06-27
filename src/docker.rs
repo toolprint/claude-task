@@ -231,7 +231,7 @@ impl DockerManager {
         let mut wait_stream = self
             .docker
             .wait_container(&container.id, Some(wait_options));
-        while let Some(result) = wait_stream.next().await {
+        if let Some(result) = wait_stream.next().await {
             match result {
                 Ok(wait_result) => {
                     if wait_result.status_code != 0 {
@@ -240,7 +240,6 @@ impl DockerManager {
                             wait_result.status_code
                         ));
                     }
-                    break;
                 }
                 Err(e) => return Err(anyhow::anyhow!("Wait error: {}", e)),
             }
@@ -474,7 +473,7 @@ impl DockerManager {
 
         // Use docker run with a temporary container to calculate volume size
         let output = Command::new("docker")
-            .args(&[
+            .args([
                 "run",
                 "--rm",
                 "-v",
@@ -500,28 +499,6 @@ impl DockerManager {
             .to_string();
 
         Ok(size)
-    }
-
-    /// Remove volumes for a specific task (now only removes per-task volumes if they exist from old system)
-    pub async fn remove_task_volumes(&self, task_id: &str) -> Result<()> {
-        let volume_names = vec![format!("claude-task-{}-home-dir", task_id)];
-
-        println!(
-            "Note: Per-task volumes are deprecated. Only cleaning up legacy volumes if they exist."
-        );
-        for volume_name in volume_names {
-            match self.docker.remove_volume(&volume_name, None).await {
-                Ok(_) => println!("✓ Legacy volume '{}' removed", volume_name),
-                Err(e) if e.to_string().contains("no such volume") => {
-                    println!("⚠️  Legacy volume '{}' not found (expected)", volume_name)
-                }
-                Err(e) => {
-                    eprintln!("❌ Failed to remove legacy volume '{}': {}", volume_name, e);
-                }
-            }
-        }
-
-        Ok(())
     }
 
     /// Check if claude-task-home volume exists

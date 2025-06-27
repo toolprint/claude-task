@@ -9,6 +9,20 @@ use std::time::{SystemTime, UNIX_EPOCH};
 mod credentials;
 mod docker;
 
+#[derive(Debug)]
+struct TaskRunConfig<'a> {
+    prompt: &'a str,
+    task_id: Option<String>,
+    build: bool,
+    workspace_dir: Option<Option<String>>,
+    approval_tool_permission: Option<String>,
+    debug: bool,
+    mcp_config: Option<String>,
+    skip_confirmation: bool,
+    worktree_base_dir: &'a str,
+    task_base_home_dir: &'a str,
+}
+
 use credentials::setup_credentials_and_config;
 use docker::{ClaudeTaskConfig, DockerManager};
 
@@ -180,7 +194,7 @@ fn create_git_worktree(
 
     // Create the worktree
     let output = Command::new("git")
-        .args(&["worktree", "add", "-b", &branch_name])
+        .args(["worktree", "add", "-b", &branch_name])
         .arg(&worktree_path)
         .current_dir(&repo_root)
         .output()
@@ -210,7 +224,7 @@ fn list_git_worktrees(branch_prefix: &str) -> Result<()> {
     println!();
 
     let output = Command::new("git")
-        .args(&["worktree", "list", "--porcelain"])
+        .args(["worktree", "list", "--porcelain"])
         .current_dir(&repo_root)
         .output()
         .context("Failed to execute git worktree list command")?;
@@ -365,7 +379,7 @@ fn remove_git_worktree(task_id: &str, branch_prefix: &str) -> Result<()> {
 
     // First, get list of worktrees to find the one with matching branch
     let output = Command::new("git")
-        .args(&["worktree", "list", "--porcelain"])
+        .args(["worktree", "list", "--porcelain"])
         .current_dir(&repo_root)
         .output()
         .context("Failed to execute git worktree list command")?;
@@ -415,7 +429,7 @@ fn remove_git_worktree(task_id: &str, branch_prefix: &str) -> Result<()> {
     // Remove the worktree
     println!("Removing worktree...");
     let output = Command::new("git")
-        .args(&["worktree", "remove", &worktree_path, "--force"])
+        .args(["worktree", "remove", &worktree_path, "--force"])
         .current_dir(&repo_root)
         .output()
         .context("Failed to execute git worktree remove command")?;
@@ -433,7 +447,7 @@ fn remove_git_worktree(task_id: &str, branch_prefix: &str) -> Result<()> {
     // Delete the branch
     println!("Deleting branch '{}'...", branch_name);
     let output = Command::new("git")
-        .args(&["branch", "-D", &branch_name])
+        .args(["branch", "-D", &branch_name])
         .current_dir(&repo_root)
         .output()
         .context("Failed to execute git branch delete command")?;
@@ -478,18 +492,10 @@ async fn init_shared_volumes(
     let dummy_config = ClaudeTaskConfig::default();
     docker_manager.create_volumes(&dummy_config).await?;
 
-    // Run setup if requested or ensure claude-task-home exists
+    // Run setup if requested
     if refresh_credentials {
         println!("Refreshing credentials...");
         setup_credentials_and_config(task_base_home_dir, debug).await?;
-    } else {
-        // Check if claude-task-home exists, create it if not
-        if !docker_manager.check_home_volume_exists().await? {
-            println!("claude-task-home volume not found, running setup...");
-            setup_credentials_and_config(task_base_home_dir, debug).await?;
-        } else {
-            println!("✓ claude-task-home volume already exists");
-        }
     }
 
     println!();
@@ -517,39 +523,28 @@ fn generate_short_id() -> String {
     format!("{:x}", hasher.finish())[..8].to_string()
 }
 
-async fn run_claude_task(
-    prompt: &str,
-    task_id: Option<String>,
-    build: bool,
-    workspace_dir: Option<Option<String>>,
-    approval_tool_permission: Option<String>,
-    debug: bool,
-    mcp_config: Option<String>,
-    skip_confirmation: bool,
-    worktree_base_dir: &str,
-    task_base_home_dir: &str,
-) -> Result<()> {
-    if debug {
+async fn run_claude_task(config: TaskRunConfig<'_>) -> Result<()> {
+    if config.debug {
         println!("🔍 Debug mode enabled");
         println!("📝 Task parameters:");
-        println!("   - Prompt: {}", prompt);
-        println!("   - Task ID: {:?}", task_id);
-        println!("   - Build: {}", build);
-        println!("   - Workspace dir: {:?}", workspace_dir);
+        println!("   - Prompt: {}", config.prompt);
+        println!("   - Task ID: {:?}", config.task_id);
+        println!("   - Build: {}", config.build);
+        println!("   - Workspace dir: {:?}", config.workspace_dir);
         println!(
             "   - Approval tool permission: {:?}",
-            approval_tool_permission
+            config.approval_tool_permission
         );
-        println!("   - MCP config: {:?}", mcp_config);
-        println!("   - Worktree base dir: {}", worktree_base_dir);
-        println!("   - Task base home dir: {}", task_base_home_dir);
+        println!("   - MCP config: {:?}", config.mcp_config);
+        println!("   - Worktree base dir: {}", config.worktree_base_dir);
+        println!("   - Task base home dir: {}", config.task_base_home_dir);
         println!();
     }
 
     let current_dir = std::env::current_dir().context("Could not get current directory")?;
 
     // Validate MCP config file if provided
-    let validated_mcp_config = if let Some(mcp_path) = mcp_config {
+    let validated_mcp_config = if let Some(mcp_path) = config.mcp_config {
         let mcp_config_path = if Path::new(&mcp_path).is_absolute() {
             PathBuf::from(mcp_path)
         } else {
@@ -563,7 +558,7 @@ async fn run_claude_task(
             ));
         }
 
-        if debug {
+        if config.debug {
             println!("🔍 MCP config file found: {}", mcp_config_path.display());
         }
 
@@ -573,7 +568,7 @@ async fn run_claude_task(
     };
 
     // Handle approval tool permission configuration FIRST, before any setup
-    let (permission_tool_arg, skip_permissions) = match approval_tool_permission {
+    let (permission_tool_arg, skip_permissions) = match config.approval_tool_permission {
         Some(tool) => (tool, false),
         None => {
             // Show warning and request confirmation
@@ -583,7 +578,7 @@ async fn run_claude_task(
             println!("   This is DANGEROUS and should only be used in trusted environments.");
             println!();
 
-            if !skip_confirmation {
+            if !config.skip_confirmation {
                 print!("❓ Are you sure you want to proceed without permission prompts? [y/N]: ");
                 use std::io::{self, Write};
                 io::stdout().flush().context("Failed to flush stdout")?;
@@ -610,17 +605,17 @@ async fn run_claude_task(
     };
 
     // Generate or use provided task ID
-    let task_id = match task_id {
+    let task_id = match config.task_id {
         Some(id) => id,
         None => generate_short_id(),
     };
 
     println!("Running Claude task with ID: {}", task_id);
-    println!("Prompt: {}", prompt);
+    println!("Prompt: {}", config.prompt);
     println!();
 
     // Determine workspace directory
-    let workspace_path = match workspace_dir {
+    let workspace_path = match config.workspace_dir {
         Some(Some(custom_dir)) => {
             // Use custom directory provided
             let custom_path = PathBuf::from(&custom_dir);
@@ -642,7 +637,7 @@ async fn run_claude_task(
             // Default: Create worktree
             println!("🌿 Creating git worktree for task...");
             let (worktree_path, branch_name) =
-                create_git_worktree(&task_id, "claude-task/", worktree_base_dir)?;
+                create_git_worktree(&task_id, "claude-task/", config.worktree_base_dir)?;
             println!(
                 "✓ Worktree created: {:?} (branch: {})",
                 worktree_path, branch_name
@@ -656,46 +651,48 @@ async fn run_claude_task(
     let docker_manager = DockerManager::new().context("Failed to create Docker manager")?;
 
     // Check if claude-task-home volume exists, run setup if it doesn't
-    if debug {
+    if config.debug {
         println!("🔍 Checking if claude-task-home volume exists...");
     }
     let home_volume_exists = docker_manager.check_home_volume_exists().await?;
-    if debug {
+    if config.debug {
         println!("   Volume exists: {}", home_volume_exists);
     }
 
     if !home_volume_exists {
         println!("🔧 claude-task-home volume not found, running setup...");
-        setup_credentials_and_config(task_base_home_dir, debug).await?;
+        setup_credentials_and_config(config.task_base_home_dir, config.debug).await?;
         println!();
-    } else if debug {
+    } else if config.debug {
         println!("✓ claude-task-home volume found");
     }
 
     // Create task configuration
-    let mut config = ClaudeTaskConfig::default();
-    config.task_id = task_id.clone();
-    config.workspace_path = workspace_path.clone();
+    let mut claude_config = ClaudeTaskConfig {
+        task_id: task_id.clone(),
+        workspace_path: workspace_path.clone(),
+        ..ClaudeTaskConfig::default()
+    };
 
-    if debug {
+    if config.debug {
         println!("🔍 Docker configuration:");
-        println!("   - Task ID: {}", config.task_id);
-        println!("   - Workspace path: {}", config.workspace_path);
-        println!("   - Timezone: {}", config.timezone);
+        println!("   - Task ID: {}", claude_config.task_id);
+        println!("   - Workspace path: {}", claude_config.workspace_path);
+        println!("   - Timezone: {}", claude_config.timezone);
     }
 
     // Create volumes (npm and node cache)
-    docker_manager.create_volumes(&config).await?;
+    docker_manager.create_volumes(&claude_config).await?;
 
     // Build image if requested, otherwise check if image exists
-    if build {
+    if config.build {
         // Only validate Dockerfile paths when building
         if current_dir.join("claude-task/Dockerfile").exists() {
-            config.dockerfile_path = current_dir
+            claude_config.dockerfile_path = current_dir
                 .join("claude-task/Dockerfile")
                 .to_string_lossy()
                 .to_string();
-            config.context_path = current_dir
+            claude_config.context_path = current_dir
                 .join("claude-task")
                 .to_string_lossy()
                 .to_string();
@@ -706,20 +703,24 @@ async fn run_claude_task(
             .exists()
         {
             let parent = current_dir.parent().unwrap_or(&current_dir);
-            config.dockerfile_path = parent
+            claude_config.dockerfile_path = parent
                 .join("claude-task/Dockerfile")
                 .to_string_lossy()
                 .to_string();
-            config.context_path = parent.join("claude-task").to_string_lossy().to_string();
+            claude_config.context_path = parent.join("claude-task").to_string_lossy().to_string();
         } else {
             return Err(anyhow::anyhow!(
                 "Dockerfile not found in ./claude-task/ or ../claude-task/\nMake sure you're running this from the correct directory."
             ));
         }
-        docker_manager.build_image(&config).await?;
+        docker_manager.build_image(&claude_config).await?;
     } else {
         // Check if the image exists, if not suggest using --build
-        if let Err(_) = docker_manager.check_image_exists("claude-task:dev").await {
+        if docker_manager
+            .check_image_exists("claude-task:dev")
+            .await
+            .is_err()
+        {
             println!("⚠️  Image 'claude-task:dev' not found.");
             println!("   Use '--build' flag to build the image first, or build it manually:");
             println!("   docker build -t claude-task:dev ./claude-task/");
@@ -733,10 +734,10 @@ async fn run_claude_task(
     // Run Claude task
     docker_manager
         .run_claude_task(
-            &config,
-            prompt,
+            &claude_config,
+            config.prompt,
             &permission_tool_arg,
-            debug,
+            config.debug,
             validated_mcp_config,
             skip_permissions,
         )
@@ -782,7 +783,7 @@ async fn clean_shared_volumes(debug: bool) -> Result<()> {
 
     for volume_name in &volume_names {
         let output = Command::new("docker")
-            .args(&["volume", "rm", volume_name])
+            .args(["volume", "rm", volume_name])
             .output()
             .context("Failed to execute docker volume rm command")?;
 
@@ -840,6 +841,11 @@ async fn clean_all_worktrees_and_volumes(
         }
     }
 
+    // Extract claude volumes that will be cleaned up
+    let docker_manager = DockerManager::new().context("Failed to create Docker manager")?;
+
+    let volumes = docker_manager.list_claude_volumes().await?;
+
     // Display what will be cleaned
     println!("📋 Found {} worktrees to clean up:", worktrees.len());
     for (i, (path, _, branch)) in worktrees.iter().enumerate() {
@@ -851,19 +857,10 @@ async fn clean_all_worktrees_and_volumes(
         println!("  {}. Branch: {} (Path: {})", i + 1, clean_branch, path);
     }
 
-    if !task_ids.is_empty() {
-        println!();
-        println!("📦 Legacy Docker volumes that will be cleaned (if they exist):");
-        for task_id in &task_ids {
-            println!(
-                "  - claude-task-{}-home-dir (legacy)",
-                sanitize_branch_name(task_id)
-            );
-        }
-        println!("Note: Current system uses shared volume 'claude-task-home'");
+    println!("🐋 Found {} claude volumes to clean up:", volumes.len());
+    for (i, (name, _)) in volumes.iter().enumerate() {
+        println!("  {}. Volume: {}", i + 1, name);
     }
-
-    println!();
 
     // Ask for confirmation unless skipped
     if !skip_confirmation {
@@ -887,7 +884,7 @@ async fn clean_all_worktrees_and_volumes(
     println!();
 
     // Create Docker manager for volume cleanup
-    let docker_manager = DockerManager::new().context("Failed to create Docker manager")?;
+    let _docker_manager = DockerManager::new().context("Failed to create Docker manager")?;
 
     // Clean up each worktree and its volumes
     for (i, (_, _, branch)) in worktrees.iter().enumerate() {
@@ -913,13 +910,6 @@ async fn clean_all_worktrees_and_volumes(
                     println!("✓ Worktree removed for task '{}'", task_id);
                 }
 
-                // Remove associated Docker volumes
-                if let Err(e) = docker_manager.remove_task_volumes(task_id).await {
-                    println!("⚠️  Failed to remove volumes for '{}': {}", task_id, e);
-                } else {
-                    println!("✓ Volumes removed for task '{}'", task_id);
-                }
-
                 println!();
             }
         }
@@ -937,7 +927,7 @@ fn get_matching_worktrees(branch_prefix: &str) -> Result<Vec<(String, String, St
     let repo_root = find_git_repo_root(&current_dir)?;
 
     let output = Command::new("git")
-        .args(&["worktree", "list", "--porcelain"])
+        .args(["worktree", "list", "--porcelain"])
         .current_dir(&repo_root)
         .output()
         .context("Failed to execute git worktree list command")?;
@@ -1071,19 +1061,19 @@ async fn main() -> Result<()> {
             yes,
         }) => {
             let debug_mode = cli.debug || debug; // Use global debug or local debug flag
-            run_claude_task(
-                &prompt,
+            let config = TaskRunConfig {
+                prompt: &prompt,
                 task_id,
                 build,
                 workspace_dir,
                 approval_tool_permission,
-                debug_mode,
+                debug: debug_mode,
                 mcp_config,
-                yes,
-                &cli.worktree_base_dir,
-                &cli.task_base_home_dir,
-            )
-            .await?;
+                skip_confirmation: yes,
+                worktree_base_dir: &cli.worktree_base_dir,
+                task_base_home_dir: &cli.task_base_home_dir,
+            };
+            run_claude_task(config).await?;
         }
         Some(Commands::Clean { yes }) => {
             clean_all_worktrees_and_volumes(&cli.branch_prefix, yes).await?;

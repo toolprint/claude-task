@@ -1,0 +1,26 @@
+{
+    "permissions": {
+        "allow": [
+            "Bash(just:*)",
+            "Bash(cargo search:*)",
+            "Bash(cargo check:*)",
+            "Bash(cargo build:*)",
+            "Bash(cargo test:*)",
+            "Bash(cargo bench:*)",
+            "Bash(cargo clippy:*)",
+            "Bash(cargo fmt:*)",
+            "Bash(cargo audit:*)",
+            "Bash(cargo update:*)",
+            "Bash(cargo run:*)",
+            "Bash(grep:*)",
+            "Bash(rg:*)",
+            "Bash(tq:*)",
+            "WebFetch(domain:github.com)",
+            "WebFetch(domain:raw.githubusercontent.com)"
+        ],
+        "deny": [
+            "Bash(./target/debug/claude-task:*)",
+            "Bash(./target/release/claude-task:*)"
+        ]
+    }
+}

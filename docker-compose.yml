@@ -1,0 +1,24 @@
+services:
+  claude-task:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        TZ: ${TZ:-America/New_York}
+    image: claude-task:dev
+    container_name: claude-task-${TASK_ID:-default}
+    volumes:
+      - command-history:/commandhistory
+      - home-dir:/home/node  
+      - ${PWD}:/workspace:delegated
+    environment:
+      - TASK_ID=${TASK_ID:-default}
+      - NODE_OPTIONS=--max-old-space-size=4096
+      - CLAUDE_CONFIG_DIR=/home/node/.claude
+      - POWERLEVEL9K_DISABLE_GITSTATUS=true
+
+volumes:
+  command-history:
+    name: claude-task-${TASK_ID:-default}-command-history
+  home-dir:
+    name: claude-task-${TASK_ID:-default}-home-dir

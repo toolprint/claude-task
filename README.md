@@ -1,175 +1,186 @@
-# Claude Setup
+# Claude Task
 
-A CLI workspace setup utility for extracting macOS settings, credentials, and managing git worktrees for Claude development environments.
+A CLI tool for setting up isolated development environments with Docker and git worktrees for Claude Code tasks.
 
-## Purpose
+## Description
 
-This tool helps bridge the gap between your local macOS development environment and containerized or remote development environments by safely extracting and packaging necessary configuration files, credentials, and settings. It also provides git worktree management for isolated development sessions.
+Claude Task is a Rust-based CLI utility that streamlines the creation of isolated development environments for AI-assisted coding tasks. It extracts macOS credentials, manages git worktrees, handles Docker volumes, and runs Claude Code in containerized environments with proper authentication and workspace isolation.
 
 ## Features
 
-### Credential Setup
+### Environment Setup
+- Extracts macOS keychain credentials for Claude Code authentication
+- Configures Claude settings for containerized environments
+- Sets up isolated home directories with proper permissions
 
-- Extracts macOS keychain credentials for Claude Code
-- Filters and packages Claude configuration files
-- Prepares mount-ready configuration bundles for containers
-
-### Worktree Management
-
+### Git Worktree Management
 - Creates isolated git worktrees for development sessions
 - Generates timestamped worktree directories
 - Automatically creates feature branches with sanitized names
-- Stores worktrees in `.claude-task/worktrees/` by default (configurable)
+- Configurable branch prefixes and worktree locations
 
-### Docker Volume Management
+### Docker Integration
+- Creates and manages Docker volumes for persistent environments
+- Builds and runs containerized Claude Code instances
+- Mounts workspaces with proper permissions
+- Handles credential injection and environment setup
 
-- Creates named Docker volumes for containerized development environments
-- Copies Claude configuration and credentials to volumes
-- Supports refreshing credentials before volume initialization
-- Generates volume names in format: `claude-task-<task-id>-home-dir`
-- Uses native Docker API for improved performance and reliability
-- Eliminates dependency on docker-compose YAML files
+### Task Execution
+- Runs Claude Code tasks in isolated Docker containers
+- Supports custom prompts and task configurations
+- Provides workspace flexibility (worktrees, current directory, or custom paths)
+- Automatic cleanup and resource management
+
+## Installation
+
+### Prerequisites
+- macOS 10.15 or later
+- Rust 1.70+
+- Docker Desktop
+- Git
+- Administrative privileges for keychain access
+
+### Build from Source
+```bash
+# Clone the repository
+git clone <repository-url>
+cd claude-task
+
+# Build the project
+just build
+
+# Install locally (creates symlink 'ct' for convenience)
+just install
+```
 
 ## Usage
 
-### Extract and Setup Credentials
-
+### Command Overview
 ```bash
-# Extract all supported settings and credentials
-cargo run -- setup
+# Show all available commands
+claude-task --help
+
+# Setup credentials and environment
+claude-task setup
+
+# Git worktree management
+claude-task worktree <command>
+
+# Docker volume management  
+claude-task volume <command>
+
+# Run Claude tasks
+claude-task run <prompt>
+
+# Clean up resources
+claude-task clean
 ```
 
-This will create:
+### Basic Workflow
 
-- `./output/.claude/.credentials.json` - Extracted keychain credentials
-- `./output/.claude.json` - Filtered Claude configuration
+1. **Initial Setup**
+   ```bash
+   # Extract credentials and setup environment
+   claude-task setup
+   ```
 
-### Manage Git Worktrees
+2. **Run a Task**
+   ```bash
+   # Run Claude with a prompt (creates worktree automatically)
+   claude-task run "Analyze this codebase and suggest improvements"
+   
+   # Run with custom task ID
+   claude-task run "Review the API design" --task-id my-review
+   
+   # Use current directory instead of creating worktree
+   claude-task run "Quick code review" --use-current-dir
+   ```
 
-```bash
-# Create a new worktree with default branch prefix "claude-task/"
-cargo run -- worktree my-session-name
+3. **Manual Worktree Management**
+   ```bash
+   # Create a worktree manually
+   claude-task worktree create my-feature
+   
+   # List existing worktrees
+   claude-task worktree list
+   
+   # Remove a worktree
+   claude-task worktree remove my-feature
+   ```
 
-# Create worktree with custom branch prefix
-cargo run -- worktree my-session-name --branch-prefix "feature-"
+4. **Cleanup**
+   ```bash
+   # Clean up all resources (worktrees and volumes)
+   claude-task clean
+   ```
 
-# Create worktree in custom directory
-cargo run -- worktree my-session-name --worktree-dir "/path/to/worktrees"
+### Global Options
+- `--worktree-base-dir`: Base directory for worktrees (default: `~/.claude-task/worktrees`)
+- `--branch-prefix`: Branch prefix for worktrees (default: `claude-task/`)
+- `--task-base-home-dir`: Base directory for task environments (default: `~/.claude-task/home`)
+- `--debug`: Enable debug mode
 
-# List current worktrees (filtered by default prefix "claude-task/")
-cargo run -- list
+## Development
 
-# List worktrees with custom prefix filter
-cargo run -- list --branch-prefix "feature-"
-
-# List all worktrees (no filter)
-cargo run -- list --branch-prefix ""
-
-# Remove and clean up a worktree by session ID
-cargo run -- remove my-session-name
-
-# Remove worktree with custom branch prefix
-cargo run -- remove my-session-name --branch-prefix "feature-"
-
-# Initialize a docker volume for a task
-cargo run -- init-volume my-task-id
-
-# Initialize a docker volume and refresh credentials first
-cargo run -- init-volume my-task-id --refresh-credentials
-```
-
-This will:
-
-- Find the git repository root
-- Create a new branch (e.g., `claude-task/my-session-name`)
-- Create worktree in `.claude-task/worktrees/my-session-name_<timestamp>/`
-
-### Initialize Docker Volume
-
-```bash
-# Initialize a docker volume for a task
-cargo run -- init-volume my-task-id
-
-# Initialize a docker volume and refresh credentials first
-cargo run -- init-volume my-task-id --refresh-credentials
-```
-
-This will:
-
-- Create a Docker volume named `claude-task-my-task-id-home-dir`
-- Copy all files from `./output/` to the volume under `/home/node`
-- Set appropriate permissions (writable by all)
-- Optionally refresh credentials before copying if `--refresh-credentials` is used
-
-### Run Claude Task
+### Using Just
+This project uses [Just](https://just.systems/) as a command runner:
 
 ```bash
-# Run a Claude task in docker container (auto-generates task ID, creates worktree by default)
-cargo run -- run-task "Analyze the codebase and suggest improvements"
+# Show available commands
+just
 
-# Run a Claude task with specific task ID
-cargo run -- run-task "Review the API design" --task-id my-custom-task
+# Build the project
+just build
 
-# Run a Claude task and build the image first
-cargo run -- run-task "Review the code" --build
+# Run with arguments
+just run --help
 
-# Use current directory instead of creating a worktree
-cargo run -- run-task "Quick analysis" --use-current-dir
+# Run tests
+just test
 
-# Use a custom workspace directory
-cargo run -- run-task "Analyze specific project" --workspace-dir "/path/to/project"
+# Format code
+just fmt
+
+# Run linter
+just clippy
+
+# Install locally
+just install
+
+# Run a task (shortcut)
+just task "Your prompt here"
 ```
 
-This will:
+### Project Structure
+- `src/main.rs` - Main CLI entry point
+- `src/credentials.rs` - macOS keychain credential extraction
+- `src/docker.rs` - Docker volume and container management
+- `tests/` - Integration tests
+- `Dockerfile` - Container image definition
+- `justfile` - Development commands
 
-- Generate a short task ID (or use provided one)
-- **By default**: Create a git worktree for the task (branch: `claude-task/{task-id}`)
-- Initialize docker volume with credentials
-- Run Docker container with Claude
-- Mount the worktree (or specified directory) as the workspace
-- Pass the prompt to Claude
-- Provide isolated environment with persistent home directory
+## Configuration
 
-**Workspace Options:**
-- **Default**: Creates git worktree in `.claude-task/worktrees/{task-id}_{timestamp}/`
-- **`--use-current-dir`**: Uses the current directory as workspace
-- **`--workspace-dir`**: Uses the specified custom directory as workspace
+### Default Locations
+- Worktrees: `~/.claude-task/worktrees/`
+- Task home directories: `~/.claude-task/home/`
+- Branch prefix: `claude-task/`
 
-### Command Reference
+### Environment Variables
+The tool respects standard environment variables:
+- `CARGO_HOME` - For binary installation location
+- `DOCKER_HOST` - For Docker daemon connection
 
+## Troubleshooting
+
+### Common Issues
+- **Keychain access denied**: Ensure administrative privileges and grant access when prompted
+- **Docker connection failed**: Verify Docker Desktop is running
+- **Git worktree creation failed**: Ensure you're in a git repository
+- **Permission errors**: Check file system permissions in worktree directories
+
+### Debug Mode
+Use `--debug` flag for verbose output:
 ```bash
-# Show help (default behavior)
-cargo run
-cargo run -- --help
-
-# Setup credentials
-cargo run -- setup
-
-# Create git worktree
-cargo run -- worktree <session-name> [--branch-prefix <prefix>] [--worktree-dir <directory>]
-
-# List current worktrees (filtered by default prefix "claude-task/")
-cargo run -- list [--branch-prefix <prefix>]
-
-# Remove and clean up a worktree
-cargo run -- remove <session-id> [--branch-prefix <prefix>]
-
-# Initialize a docker volume for a task
-cargo run -- init-volume <task-id> [--refresh-credentials]
-
-# Run a Claude task in docker container
-cargo run -- run-task <prompt> [--task-id <task-id>] [--build] [--use-current-dir] [--workspace-dir <directory>]
-
-# List Docker volumes
-cargo run -- list-volumes
-
-# Clean up Docker volumes for a task
-cargo run -- clean-volumes <task-id>
+claude-task --debug run "Debug this issue"
 ```
-
-## Requirements
-
-- macOS 10.15 or later
-- Rust 1.70+
-- Administrative privileges for keychain access
-- Git repository for worktree operations

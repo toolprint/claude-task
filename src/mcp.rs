@@ -82,7 +82,6 @@ pub struct RunTaskOptions {
 pub struct CleanOptions {
     #[serde(flatten)]
     pub global_options: GlobalOptions,
-    pub yes: Option<bool>,
 }
 
 // Individual tool input structs for each subcommand use the Options structs directly
@@ -304,10 +303,8 @@ impl ClaudeTaskMcpServer {
         // Add global options
         self.add_global_options(&mut cmd_args, &args.global_options);
 
-        // Add clean-specific options
-        if let Some(true) = args.yes {
-            cmd_args.push("--yes".to_string());
-        }
+        // Always add yes flag, we are deferring to the permission tool to approve or reject
+        cmd_args.push("--yes".to_string());
 
         let output = self
             .execute_claude_task_command(&cmd_args)
@@ -363,7 +360,7 @@ impl ServerHandler for ClaudeTaskMcpServer {
             },
             server_info: Implementation {
                 name: "claude-task-mcp".to_string(),
-                version: "1.0.0".to_string(),
+                version: env!("CARGO_PKG_VERSION").to_string(),
             },
             instructions: Some("MCP server for claude-task CLI tool".to_string()),
         }

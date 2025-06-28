@@ -61,15 +61,15 @@ enum VolumeCommands {
 }
 
 #[derive(Parser)]
-#[command(name = "claude-setup")]
-#[command(about = "Claude setup and git worktree management")]
+#[command(name = "claude-task")]
+#[command(about = "Claude Task Management CLI")]
 struct Cli {
     /// Base directory for worktrees
     #[arg(long, global = true, default_value = "~/.claude-task/worktrees")]
     worktree_base_dir: String,
 
     /// Branch prefix for worktrees
-    #[arg(long, global = true, default_value = "claude-task/")]
+    #[arg(short = 'b', long, global = true, default_value = "claude-task/")]
     branch_prefix: String,
 
     /// Base directory for task home directory and setup files
@@ -77,7 +77,7 @@ struct Cli {
     task_base_home_dir: String,
 
     /// Enable debug mode
-    #[arg(long, global = true)]
+    #[arg(short = 'd', long, global = true)]
     debug: bool,
 
     #[command(subcommand)]
@@ -112,13 +112,10 @@ enum Commands {
         #[arg(long, value_name = "DIR")]
         workspace_dir: Option<Option<String>>,
         /// Claude Code permission statement to pass for approval tool. Example: "mcp__approval_server__tool_name"
-        #[arg(long, value_name = "PERMISSION_STATEMENT")]
+        #[arg(short = 'a', long, value_name = "PERMISSION_STATEMENT")]
         approval_tool_permission: Option<String>,
-        /// Enable debug mode for Claude command
-        #[arg(long)]
-        debug: bool,
         /// Optional MCP config file path that will be mounted to the container and passed to Claude
-        #[arg(long, value_name = "MCP_CONFIG_FILEPATH")]
+        #[arg(short = 'c', long, value_name = "MCP_CONFIG_FILEPATH")]
         mcp_config: Option<String>,
         /// Skip confirmation prompts (automatically answer yes)
         #[arg(long, short)]
@@ -127,9 +124,11 @@ enum Commands {
     /// Clean up all claude-task git worktrees and docker volumes
     Clean {
         /// Skip confirmation prompt
-        #[arg(long)]
+        #[arg(long, short = 'y')]
         yes: bool,
     },
+    /// Print version information
+    Version,
 }
 
 fn sanitize_branch_name(name: &str) -> String {
@@ -1077,11 +1076,10 @@ async fn main() -> Result<()> {
             build,
             workspace_dir,
             approval_tool_permission,
-            debug,
             mcp_config,
             yes,
         }) => {
-            let debug_mode = cli.debug || debug; // Use global debug or local debug flag
+            let debug_mode = cli.debug; // Use global debug flag
             let config = TaskRunConfig {
                 prompt: &prompt,
                 task_id,
@@ -1098,6 +1096,9 @@ async fn main() -> Result<()> {
         }
         Some(Commands::Clean { yes }) => {
             clean_all_worktrees_and_volumes(&cli.branch_prefix, yes).await?;
+        }
+        Some(Commands::Version) => {
+            println!("claude-task {}", env!("CARGO_PKG_VERSION"));
         }
         None => {
             // Default behavior: show help

@@ -8,17 +8,20 @@ Claude Task is a Rust CLI tool that creates isolated development environments fo
 
 ## Core Architecture
 
-The project consists of three main modules:
+The project consists of five main modules:
 
 - **`main.rs`**: CLI interface using clap, orchestrates all operations
 - **`credentials.rs`**: macOS keychain extraction and biometric authentication
 - **`docker.rs`**: Docker container and volume management using Bollard API
+- **`mcp.rs`**: MCP (Model Context Protocol) server implementation exposing CLI functionality as tools
+- **`permission.rs`**: Approval tool permission validation for secure MCP operations
 
 ### Key Data Flow
 
 1. **Setup Phase**: Extract macOS credentials → Create Docker volumes → Configure environment
 2. **Task Phase**: Create git worktree → Build/validate Docker image → Run containerized Claude
 3. **Cleanup Phase**: Remove worktrees and volumes
+4. **MCP Mode**: Start stdio server → Expose CLI operations as MCP tools → Validate permissions
 
 ## Development Commands
 
@@ -55,6 +58,9 @@ just install
 
 # Run a task directly
 just task "Your prompt here"
+
+# Run MCP server for Claude Code integration
+just run mcp
 ```
 
 ### Docker Operations
@@ -72,12 +78,12 @@ docker buildx bake
 - Creates timestamped branches with `claude-task/` prefix
 - Stores worktrees in `~/.claude-task/worktrees/` by default
 - Handles branch cleanup and worktree removal
-- Functions in `main.rs:172-473` handle worktree lifecycle
+- Functions in `main.rs` handle worktree lifecycle
 
 ### Docker Integration
 - Uses Bollard library for Docker API communication
 - Creates shared volumes: `claude-task-home`, `claude-task-npm-cache`, `claude-task-node-cache`
-- Container configuration in `docker.rs:254-389`
+- Container configuration in `docker.rs`
 - Mounts workspace, credentials, and optional MCP configs
 
 ### Credential Management
@@ -91,6 +97,13 @@ docker buildx bake
 - Installs Claude Code globally via npm
 - Sets up zsh with powerline10k theme
 - Mounts workspaces and credentials securely
+
+### MCP Server Architecture
+- Implements full MCP (Model Context Protocol) server using `rmcp` crate
+- Exposes all CLI functionality as MCP tools for Claude Code integration
+- Uses stdio transport for direct communication with Claude Code
+- Validates approval tool permissions with format `mcp__<server_name>__<tool_name>`
+- Provides structured error handling and parameter validation
 
 ## Configuration
 
@@ -122,6 +135,7 @@ docker buildx bake
 - Read-only credential mounts
 - Permission prompts for dangerous operations
 - Isolated container environments
+- MCP approval tool permission validation prevents unauthorized operations
 
 ### Performance Optimizations
 - Shared npm/node cache volumes
@@ -138,6 +152,9 @@ docker buildx bake
 - `bollard`: Docker API client
 - `keyring`: macOS keychain access
 - `localauthentication-rs`: Biometric authentication
+- `rmcp`: MCP (Model Context Protocol) server implementation
+- `serde`: JSON serialization for MCP tools
+- `tracing`: Logging for MCP server
 
 ### Container Dependencies
 - Node.js 22 base image
@@ -153,3 +170,36 @@ just test
 ```
 
 Test files are in `tests/` directory and include MCP integration tests.
+
+### Running Specific Tests
+```bash
+# Run MCP-specific tests
+cargo test mcp
+
+# Run with debug output
+cargo test -- --nocapture
+
+# Run a single test
+cargo test test_mcp_config_validation
+```
+
+## MCP Server Development
+
+### Running the MCP Server
+```bash
+# Start MCP server (stdio mode)
+cargo run -- mcp
+
+# Start with debug logging
+RUST_LOG=debug cargo run -- mcp
+
+# Test MCP server with a real task
+just task "test prompt" --approval-tool-permission "mcp__approval_server__approve_command"
+```
+
+### MCP Tool Development
+- All CLI commands are exposed as MCP tools in `src/mcp.rs`
+- Tool parameters use JSON Schema for validation
+- Approval tool permissions must follow format: `mcp__<server_name>__<tool_name>`
+- Global options (debug, worktree-base-dir, etc.) are embedded in each tool
+- MCP config files can be passed through and mounted in containers

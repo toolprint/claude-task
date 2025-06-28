@@ -8,6 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 mod credentials;
 mod docker;
+mod mcp;
 
 #[derive(Debug)]
 struct TaskRunConfig<'a> {

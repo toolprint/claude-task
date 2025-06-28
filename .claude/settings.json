@@ -1,4 +1,8 @@
 {
+    "enabledMcpServers": [
+        "ct"
+    ],
+    "enableAllProjectMcpServers": true,
     "permissions": {
         "allow": [
             "Bash(just:*)",

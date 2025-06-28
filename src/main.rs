@@ -127,6 +127,8 @@ enum Commands {
         #[arg(long, short = 'y')]
         yes: bool,
     },
+    /// Launch MCP server on stdio
+    Mcp,
     /// Print version information
     Version,
 }
@@ -1096,6 +1098,9 @@ async fn main() -> Result<()> {
         }
         Some(Commands::Clean { yes }) => {
             clean_all_worktrees_and_volumes(&cli.branch_prefix, yes).await?;
+        }
+        Some(Commands::Mcp) => {
+            mcp::run_mcp_server().await?;
         }
         Some(Commands::Version) => {
             println!("claude-task {}", env!("CARGO_PKG_VERSION"));

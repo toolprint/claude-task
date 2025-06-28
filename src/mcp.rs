@@ -12,6 +12,13 @@ use tracing_subscriber::{self, EnvFilter};
 
 use claude_task::permission::ApprovalToolPermission;
 
+// Import internal functions from the main module
+use crate::{
+    clean_all_worktrees_and_volumes, clean_shared_volumes, create_git_worktree,
+    init_shared_volumes, remove_git_worktree, run_claude_task, setup_credentials_and_config,
+    TaskRunConfig,
+};
+
 #[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct GlobalOptions {
     pub worktree_base_dir: Option<String>,
@@ -104,17 +111,19 @@ impl ClaudeTaskMcpServer {
         &self,
         Parameters(args): Parameters<SetupOptions>,
     ) -> Result<CallToolResult, McpError> {
-        let mut cmd_args = vec!["setup".to_string()];
+        let task_base_home_dir = args
+            .global_options
+            .task_base_home_dir
+            .unwrap_or_else(|| "~/.claude-task/home".to_string());
+        let debug = args.global_options.debug.unwrap_or(false);
 
-        // Add global options
-        self.add_global_options(&mut cmd_args, &args.global_options);
-
-        let output = self
-            .execute_claude_task_command(&cmd_args)
+        setup_credentials_and_config(&task_base_home_dir, debug)
             .await
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(CallToolResult::success(vec![Content::text(
+            "Setup completed successfully".to_string(),
+        )]))
     }
 
     #[tool(description = "Create a git worktree for a task")]
@@ -122,19 +131,23 @@ impl ClaudeTaskMcpServer {
         &self,
         Parameters(args): Parameters<CreateWorktreeOptions>,
     ) -> Result<CallToolResult, McpError> {
-        let mut cmd_args = vec!["worktree".to_string(), "create".to_string()];
+        let branch_prefix = args
+            .global_options
+            .branch_prefix
+            .unwrap_or_else(|| "claude-task/".to_string());
+        let worktree_base_dir = args
+            .global_options
+            .worktree_base_dir
+            .unwrap_or_else(|| "~/.claude-task/worktrees".to_string());
 
-        // Add global options
-        self.add_global_options(&mut cmd_args, &args.global_options);
+        let (worktree_path, branch_name) =
+            create_git_worktree(&args.task_id, &branch_prefix, &worktree_base_dir)
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
-        // Add task_id
-        cmd_args.push(args.task_id);
-
-        let output = self
-            .execute_claude_task_command(&cmd_args)
-            .await
-            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
-
+        let output = format!(
+            "Git worktree created successfully\nBranch: {}\nPath: {:?}",
+            branch_name, worktree_path
+        );
         Ok(CallToolResult::success(vec![Content::text(output)]))
     }
 
@@ -143,9 +156,10 @@ impl ClaudeTaskMcpServer {
         &self,
         Parameters(args): Parameters<ListWorktreeOptions>,
     ) -> Result<CallToolResult, McpError> {
+        // We need to capture the output instead of printing directly
+        // For now, we'll use the subprocess approach but this could be improved
+        // by refactoring list_git_worktrees to return output instead of printing
         let mut cmd_args = vec!["worktree".to_string(), "list".to_string()];
-
-        // Add global options
         self.add_global_options(&mut cmd_args, &args.global_options);
 
         let output = self
@@ -161,19 +175,15 @@ impl ClaudeTaskMcpServer {
         &self,
         Parameters(args): Parameters<RemoveWorktreeOptions>,
     ) -> Result<CallToolResult, McpError> {
-        let mut cmd_args = vec!["worktree".to_string(), "remove".to_string()];
+        let branch_prefix = args
+            .global_options
+            .branch_prefix
+            .unwrap_or_else(|| "claude-task/".to_string());
 
-        // Add global options
-        self.add_global_options(&mut cmd_args, &args.global_options);
-
-        // Add task_id
-        cmd_args.push(args.task_id);
-
-        let output = self
-            .execute_claude_task_command(&cmd_args)
-            .await
+        remove_git_worktree(&args.task_id, &branch_prefix)
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
+        let output = format!("Cleanup complete for task '{}'", args.task_id);
         Ok(CallToolResult::success(vec![Content::text(output)]))
     }
 
@@ -182,22 +192,20 @@ impl ClaudeTaskMcpServer {
         &self,
         Parameters(args): Parameters<InitVolumeOptions>,
     ) -> Result<CallToolResult, McpError> {
-        let mut cmd_args = vec!["volume".to_string(), "init".to_string()];
+        let task_base_home_dir = args
+            .global_options
+            .task_base_home_dir
+            .unwrap_or_else(|| "~/.claude-task/home".to_string());
+        let debug = args.global_options.debug.unwrap_or(false);
+        let refresh_credentials = args.refresh_credentials.unwrap_or(false);
 
-        // Add global options
-        self.add_global_options(&mut cmd_args, &args.global_options);
-
-        // Add refresh credentials option
-        if let Some(true) = args.refresh_credentials {
-            cmd_args.push("--refresh-credentials".to_string());
-        }
-
-        let output = self
-            .execute_claude_task_command(&cmd_args)
+        init_shared_volumes(refresh_credentials, &task_base_home_dir, debug)
             .await
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(CallToolResult::success(vec![Content::text(
+            "All shared volumes are ready".to_string(),
+        )]))
     }
 
     #[tool(description = "List Docker volumes")]
@@ -205,9 +213,9 @@ impl ClaudeTaskMcpServer {
         &self,
         Parameters(args): Parameters<ListVolumeOptions>,
     ) -> Result<CallToolResult, McpError> {
+        // For now, use subprocess since list_docker_volumes prints directly
+        // This could be improved by refactoring to return output instead of printing
         let mut cmd_args = vec!["volume".to_string(), "list".to_string()];
-
-        // Add global options
         self.add_global_options(&mut cmd_args, &args.global_options);
 
         let output = self
@@ -223,17 +231,15 @@ impl ClaudeTaskMcpServer {
         &self,
         Parameters(args): Parameters<CleanVolumeOptions>,
     ) -> Result<CallToolResult, McpError> {
-        let mut cmd_args = vec!["volume".to_string(), "clean".to_string()];
+        let debug = args.global_options.debug.unwrap_or(false);
 
-        // Add global options
-        self.add_global_options(&mut cmd_args, &args.global_options);
-
-        let output = self
-            .execute_claude_task_command(&cmd_args)
+        clean_shared_volumes(debug)
             .await
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(CallToolResult::success(vec![Content::text(
+            "Shared volume cleanup completed".to_string(),
+        )]))
     }
 
     #[tool(description = "Run a Claude task in a local docker container")]
@@ -241,8 +247,6 @@ impl ClaudeTaskMcpServer {
         &self,
         Parameters(args): Parameters<RunTaskOptions>,
     ) -> Result<CallToolResult, McpError> {
-        let mut cmd_args = vec!["run".to_string()];
-
         // Validate approval tool permission format if not empty
         if let Err(e) = ApprovalToolPermission::parse(&args.approval_tool_permission) {
             return Err(McpError::invalid_params(
@@ -254,43 +258,35 @@ impl ClaudeTaskMcpServer {
             ));
         }
 
-        // Add global options
-        self.add_global_options(&mut cmd_args, &args.global_options);
+        let worktree_base_dir = args
+            .global_options
+            .worktree_base_dir
+            .unwrap_or_else(|| "~/.claude-task/worktrees".to_string());
+        let task_base_home_dir = args
+            .global_options
+            .task_base_home_dir
+            .unwrap_or_else(|| "~/.claude-task/home".to_string());
 
-        // Add run-specific options
-        if let Some(task_id) = &args.task_id {
-            cmd_args.extend(["--task-id".to_string(), task_id.clone()]);
-        }
-        if let Some(true) = args.build {
-            cmd_args.push("--build".to_string());
-        }
-        if let Some(workspace_dir) = &args.workspace_dir {
-            if let Some(dir) = workspace_dir {
-                cmd_args.extend(["--workspace-dir".to_string(), dir.clone()]);
-            } else {
-                cmd_args.push("--workspace-dir".to_string());
-            }
-        }
-        cmd_args.extend([
-            "--approval-tool-permission".to_string(),
-            args.approval_tool_permission.clone(),
-        ]);
-        if let Some(true) = args.debug {
-            cmd_args.push("--debug".to_string());
-        }
-        if let Some(mcp_config) = &args.mcp_config {
-            cmd_args.extend(["--mcp-config".to_string(), mcp_config.clone()]);
-        }
+        let config = TaskRunConfig {
+            prompt: &args.prompt,
+            task_id: args.task_id,
+            build: args.build.unwrap_or(false),
+            workspace_dir: args.workspace_dir,
+            approval_tool_permission: Some(args.approval_tool_permission),
+            debug: args.debug.unwrap_or(false),
+            mcp_config: args.mcp_config,
+            skip_confirmation: true, // Skip confirmation in MCP mode
+            worktree_base_dir: &worktree_base_dir,
+            task_base_home_dir: &task_base_home_dir,
+        };
 
-        // Add the prompt last
-        cmd_args.push(args.prompt.clone());
-
-        let output = self
-            .execute_claude_task_command(&cmd_args)
+        run_claude_task(config)
             .await
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(CallToolResult::success(vec![Content::text(
+            "Claude task completed successfully".to_string(),
+        )]))
     }
 
     #[tool(description = "Clean up all claude-task git worktrees and docker volumes")]
@@ -298,20 +294,19 @@ impl ClaudeTaskMcpServer {
         &self,
         Parameters(args): Parameters<CleanOptions>,
     ) -> Result<CallToolResult, McpError> {
-        let mut cmd_args = vec!["clean".to_string()];
+        let branch_prefix = args
+            .global_options
+            .branch_prefix
+            .unwrap_or_else(|| "claude-task/".to_string());
 
-        // Add global options
-        self.add_global_options(&mut cmd_args, &args.global_options);
-
-        // Always add yes flag, we are deferring to the permission tool to approve or reject
-        cmd_args.push("--yes".to_string());
-
-        let output = self
-            .execute_claude_task_command(&cmd_args)
+        // Always skip confirmation since we're deferring to the permission tool to approve or reject
+        clean_all_worktrees_and_volumes(&branch_prefix, true)
             .await
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(CallToolResult::success(vec![Content::text(
+            "Cleanup completed successfully".to_string(),
+        )]))
     }
 
     fn add_global_options(&self, cmd_args: &mut Vec<String>, global_options: &GlobalOptions) {
@@ -367,9 +362,7 @@ impl ServerHandler for ClaudeTaskMcpServer {
     }
 }
 
-#[allow(dead_code)]
-#[tokio::main]
-async fn main() -> Result<()> {
+pub async fn run_mcp_server() -> Result<()> {
     // Initialize the tracing subscriber with file and stdout logging
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env().add_directive(tracing::Level::DEBUG.into()))

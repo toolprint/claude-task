@@ -8,10 +8,6 @@ default-run = "claude-task"
 name = "claude-task"
 path = "src/main.rs"
 
-[[bin]]
-name = "claude-task-mcp"
-path = "src/mcp.rs"
-
 [dependencies]
 keyring = "2.3"
 localauthentication-rs = { git = "https://github.com/caoimhebyrne/localauthentication-rs.git" }

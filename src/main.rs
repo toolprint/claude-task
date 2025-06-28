@@ -9,6 +9,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 mod credentials;
 mod docker;
 mod mcp;
+pub mod permission;
+
+use permission::ApprovalToolPermission;
 
 #[derive(Debug)]
 struct TaskRunConfig<'a> {
@@ -604,6 +607,23 @@ async fn run_claude_task(config: TaskRunConfig<'_>) -> Result<()> {
             (String::new(), true)
         }
     };
+
+    // Validate approval tool permission format if not empty
+    if !permission_tool_arg.is_empty() {
+        if let Err(e) = ApprovalToolPermission::parse(&permission_tool_arg) {
+            return Err(anyhow::anyhow!(
+                "Invalid approval tool permission format: {}\n\nExpected format: mcp__<server_name>__<tool_name>\nExample: mcp__approval_server__approve_command", 
+                e
+            ));
+        }
+
+        if config.debug {
+            println!(
+                "✓ Approval tool permission format validated: {}",
+                permission_tool_arg
+            );
+        }
+    }
 
     // Generate or use provided task ID
     let task_id = match config.task_id {

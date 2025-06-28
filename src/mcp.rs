@@ -10,6 +10,8 @@ use serde::{Deserialize, Serialize};
 use std::future::Future;
 use tracing_subscriber::{self, EnvFilter};
 
+use claude_task::permission::ApprovalToolPermission;
+
 #[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct GlobalOptions {
     pub worktree_base_dir: Option<String>,
@@ -241,6 +243,17 @@ impl ClaudeTaskMcpServer {
         Parameters(args): Parameters<RunTaskOptions>,
     ) -> Result<CallToolResult, McpError> {
         let mut cmd_args = vec!["run".to_string()];
+
+        // Validate approval tool permission format if not empty
+        if let Err(e) = ApprovalToolPermission::parse(&args.approval_tool_permission) {
+            return Err(McpError::invalid_params(
+                format!(
+                    "Invalid approval tool permission format: {}\n\nExpected format: mcp__<server_name>__<tool_name>\nExample: mcp__approval_server__approve_command", 
+                    e
+                ),
+                None,
+            ));
+        }
 
         // Add global options
         self.add_global_options(&mut cmd_args, &args.global_options);

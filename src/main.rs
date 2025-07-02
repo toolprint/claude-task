@@ -1,10 +1,14 @@
 use anyhow::{Context, Result};
 use clap::{CommandFactory, Parser, Subcommand};
+use dialoguer::Select;
 use regex::Regex;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+// Include the generated MCP help text
+include!(concat!(env!("OUT_DIR"), "/mcp_help.rs"));
 
 mod credentials;
 mod docker;
@@ -25,6 +29,7 @@ struct TaskRunConfig<'a> {
     skip_confirmation: bool,
     worktree_base_dir: &'a str,
     task_base_home_dir: &'a str,
+    open_editor: bool,
 }
 
 use credentials::setup_credentials_and_config;
@@ -33,30 +38,39 @@ use docker::{ClaudeTaskConfig, DockerManager};
 #[derive(Subcommand)]
 enum WorktreeCommands {
     /// Create a new git worktree
+    #[command(visible_alias = "c")]
     Create {
         /// Task ID for the worktree
         task_id: String,
     },
     /// List current git worktrees
+    #[command(visible_alias = "l")]
     List,
     /// Remove and clean up a worktree
+    #[command(visible_alias = "rm")]
     Remove {
         /// Task ID to remove (will be prefixed with branch_prefix)
         task_id: String,
     },
+    /// Open a worktree in your IDE
+    #[command(visible_alias = "o")]
+    Open,
 }
 
 #[derive(Subcommand)]
-enum VolumeCommands {
+enum DockerCommands {
     /// Initialize shared docker volumes for Claude tasks
+    #[command(visible_alias = "i")]
     Init {
         /// Refresh credentials by running setup first
         #[arg(long)]
         refresh_credentials: bool,
     },
     /// List Docker volumes for Claude tasks
+    #[command(visible_alias = "l")]
     List,
     /// Clean up all shared Docker volumes
+    #[command(visible_alias = "c")]
     Clean,
 }
 
@@ -87,18 +101,22 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Setup claude-task with your current environment
+    #[command(visible_alias = "s")]
     Setup,
     /// Git worktree management commands
+    #[command(visible_alias = "wt")]
     Worktree {
         #[command(subcommand)]
         command: WorktreeCommands,
     },
-    /// Docker volume management commands
-    Volume {
+    /// Docker management commands
+    #[command(visible_alias = "d")]
+    Docker {
         #[command(subcommand)]
-        command: VolumeCommands,
+        command: DockerCommands,
     },
     /// Run a Claude task in a local docker container
+    #[command(visible_alias = "r")]
     Run {
         /// The prompt to pass to Claude
         prompt: String,
@@ -120,16 +138,22 @@ enum Commands {
         /// Skip confirmation prompts (automatically answer yes)
         #[arg(long, short)]
         yes: bool,
+        /// Open IDE in worktree after task creation
+        #[arg(short = 'e', long)]
+        open_editor: bool,
     },
     /// Clean up all claude-task git worktrees and docker volumes
+    #[command(visible_alias = "c")]
     Clean {
         /// Skip confirmation prompt
         #[arg(long, short = 'y')]
         yes: bool,
     },
     /// Launch MCP server on stdio
+    #[command(after_help = MCP_HELP_TEXT)]
     Mcp,
     /// Print version information
+    #[command(visible_alias = "v")]
     Version,
 }
 
@@ -528,6 +552,92 @@ fn generate_short_id() -> String {
     format!("{:x}", hasher.finish())[..8].to_string()
 }
 
+fn open_ide_in_path(path: &str, ide: &str) -> Result<()> {
+    println!("🚀 Opening {} in {}...", ide, path);
+    
+    let output = Command::new(ide)
+        .arg(path)
+        .output()
+        .with_context(|| format!("Failed to execute {} command", ide))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(anyhow::anyhow!(
+            "Failed to open {} with {}: {}",
+            path,
+            ide,
+            stderr
+        ));
+    }
+
+    println!("✓ {} opened successfully", ide);
+    Ok(())
+}
+
+fn select_worktree_interactively(branch_prefix: &str) -> Result<()> {
+    println!("🌿 Finding available worktrees...");
+    let worktrees = get_matching_worktrees(branch_prefix)?;
+
+    if worktrees.is_empty() {
+        println!("No claude-task worktrees found matching prefix '{}'.", branch_prefix);
+        println!("Create a new worktree with: ct worktree create <task-id>");
+        return Ok(());
+    }
+
+    // Filter to only claude-task worktrees and create display options
+    let claude_worktrees: Vec<_> = worktrees
+        .into_iter()
+        .filter(|(_, _, branch)| {
+            let clean_branch = if branch.starts_with("refs/heads/") {
+                branch.strip_prefix("refs/heads/").unwrap_or(branch)
+            } else {
+                branch
+            };
+            clean_branch.starts_with(branch_prefix)
+        })
+        .collect();
+
+    if claude_worktrees.is_empty() {
+        println!("No claude-task worktrees found.");
+        println!("Create a new worktree with: ct worktree create <task-id>");
+        return Ok(());
+    }
+
+    // Create display options for the menu
+    let mut options = Vec::new();
+    for (path, _head, branch) in &claude_worktrees {
+        let clean_branch = if branch.starts_with("refs/heads/") {
+            branch.strip_prefix("refs/heads/").unwrap_or(branch)
+        } else {
+            branch
+        };
+        
+        let path_buf = PathBuf::from(path);
+        let dir_name = path_buf
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("unknown");
+        
+        let display_name = format!("{} ({})", dir_name, clean_branch);
+        options.push(display_name);
+    }
+
+    let selection = Select::new()
+        .with_prompt("Select a worktree to open")
+        .default(0)
+        .items(&options)
+        .interact()
+        .context("Failed to get selection")?;
+
+    let selected_worktree = &claude_worktrees[selection];
+    let worktree_path = &selected_worktree.0;
+
+    println!("Selected: {}", options[selection]);
+    open_ide_in_path(worktree_path, "cursor")?;
+
+    Ok(())
+}
+
 async fn run_claude_task(config: TaskRunConfig<'_>) -> Result<()> {
     if config.debug {
         println!("🔍 Debug mode enabled");
@@ -664,6 +774,15 @@ async fn run_claude_task(config: TaskRunConfig<'_>) -> Result<()> {
                 "✓ Worktree created: {:?} (branch: {})",
                 worktree_path, branch_name
             );
+            
+            // Open IDE if requested
+            if config.open_editor {
+                if let Err(e) = open_ide_in_path(&worktree_path.to_string_lossy(), "cursor") {
+                    println!("⚠️  Warning: Failed to open IDE: {}", e);
+                    println!("   Continuing with task execution...");
+                }
+            }
+            
             worktree_path.to_string_lossy().to_string()
         }
     };
@@ -1057,18 +1176,21 @@ async fn main() -> Result<()> {
             WorktreeCommands::Remove { task_id } => {
                 remove_git_worktree(&task_id, &cli.branch_prefix)?;
             }
+            WorktreeCommands::Open => {
+                select_worktree_interactively(&cli.branch_prefix)?;
+            }
         },
-        Some(Commands::Volume { command }) => match command {
-            VolumeCommands::Init {
+        Some(Commands::Docker { command }) => match command {
+            DockerCommands::Init {
                 refresh_credentials,
             } => {
                 init_shared_volumes(refresh_credentials, &cli.task_base_home_dir, cli.debug)
                     .await?;
             }
-            VolumeCommands::List => {
+            DockerCommands::List => {
                 list_docker_volumes().await?;
             }
-            VolumeCommands::Clean => {
+            DockerCommands::Clean => {
                 clean_shared_volumes(cli.debug).await?;
             }
         },
@@ -1080,6 +1202,7 @@ async fn main() -> Result<()> {
             approval_tool_permission,
             mcp_config,
             yes,
+            open_editor,
         }) => {
             let debug_mode = cli.debug; // Use global debug flag
             let config = TaskRunConfig {
@@ -1093,6 +1216,7 @@ async fn main() -> Result<()> {
                 skip_confirmation: yes,
                 worktree_base_dir: &cli.worktree_base_dir,
                 task_base_home_dir: &cli.task_base_home_dir,
+                open_editor,
             };
             run_claude_task(config).await?;
         }

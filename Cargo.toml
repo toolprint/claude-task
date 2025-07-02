@@ -24,3 +24,8 @@ rmcp = { git = "https://github.com/modelcontextprotocol/rust-sdk", branch = "mai
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 schemars = "0.8"
+dialoguer = "0.11"
+
+[build-dependencies]
+syn = { version = "2.0", features = ["full", "extra-traits", "parsing"] }
+quote = "1.0"

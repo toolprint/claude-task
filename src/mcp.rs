@@ -54,20 +54,20 @@ pub struct RemoveWorktreeOptions {
 }
 
 #[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct InitVolumeOptions {
+pub struct InitDockerVolumeOptions {
     #[serde(flatten)]
     pub global_options: GlobalOptions,
     pub refresh_credentials: Option<bool>,
 }
 
 #[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct ListVolumeOptions {
+pub struct ListDockerVolumeOptions {
     #[serde(flatten)]
     pub global_options: GlobalOptions,
 }
 
 #[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct CleanVolumeOptions {
+pub struct CleanDockerVolumeOptions {
     #[serde(flatten)]
     pub global_options: GlobalOptions,
 }
@@ -145,8 +145,7 @@ impl ClaudeTaskMcpServer {
                 .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
         let output = format!(
-            "Git worktree created successfully\nBranch: {}\nPath: {:?}",
-            branch_name, worktree_path
+            "Git worktree created successfully\nBranch: {branch_name}\nPath: {worktree_path:?}"
         );
         Ok(CallToolResult::success(vec![Content::text(output)]))
     }
@@ -187,10 +186,10 @@ impl ClaudeTaskMcpServer {
         Ok(CallToolResult::success(vec![Content::text(output)]))
     }
 
-    #[tool(description = "Initialize Docker volumes")]
-    async fn init_volume(
+    #[tool(description = "Initialize shared Docker volumes for Claude tasks")]
+    async fn init_docker_volume(
         &self,
-        Parameters(args): Parameters<InitVolumeOptions>,
+        Parameters(args): Parameters<InitDockerVolumeOptions>,
     ) -> Result<CallToolResult, McpError> {
         let task_base_home_dir = args
             .global_options
@@ -208,14 +207,14 @@ impl ClaudeTaskMcpServer {
         )]))
     }
 
-    #[tool(description = "List Docker volumes")]
-    async fn list_volume(
+    #[tool(description = "List Docker volumes for Claude tasks")]
+    async fn list_docker_volume(
         &self,
-        Parameters(args): Parameters<ListVolumeOptions>,
+        Parameters(args): Parameters<ListDockerVolumeOptions>,
     ) -> Result<CallToolResult, McpError> {
         // For now, use subprocess since list_docker_volumes prints directly
         // This could be improved by refactoring to return output instead of printing
-        let mut cmd_args = vec!["volume".to_string(), "list".to_string()];
+        let mut cmd_args = vec!["docker".to_string(), "list".to_string()];
         self.add_global_options(&mut cmd_args, &args.global_options);
 
         let output = self
@@ -226,10 +225,10 @@ impl ClaudeTaskMcpServer {
         Ok(CallToolResult::success(vec![Content::text(output)]))
     }
 
-    #[tool(description = "Clean Docker volumes")]
-    async fn clean_volume(
+    #[tool(description = "Clean up all shared Docker volumes")]
+    async fn clean_docker_volume(
         &self,
-        Parameters(args): Parameters<CleanVolumeOptions>,
+        Parameters(args): Parameters<CleanDockerVolumeOptions>,
     ) -> Result<CallToolResult, McpError> {
         let debug = args.global_options.debug.unwrap_or(false);
 
@@ -251,8 +250,7 @@ impl ClaudeTaskMcpServer {
         if let Err(e) = ApprovalToolPermission::parse(&args.approval_tool_permission) {
             return Err(McpError::invalid_params(
                 format!(
-                    "Invalid approval tool permission format: {}\n\nExpected format: mcp__<server_name>__<tool_name>\nExample: mcp__approval_server__approve_command", 
-                    e
+                    "Invalid approval tool permission format: {e}\n\nExpected format: mcp__<server_name>__<tool_name>\nExample: mcp__approval_server__approve_command"
                 ),
                 None,
             ));
@@ -278,6 +276,7 @@ impl ClaudeTaskMcpServer {
             skip_confirmation: true, // Skip confirmation in MCP mode
             worktree_base_dir: &worktree_base_dir,
             task_base_home_dir: &task_base_home_dir,
+            open_editor: false, // Don't auto-open IDE in MCP mode
         };
 
         run_claude_task(config)

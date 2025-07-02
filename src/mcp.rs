@@ -145,8 +145,7 @@ impl ClaudeTaskMcpServer {
                 .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
         let output = format!(
-            "Git worktree created successfully\nBranch: {}\nPath: {:?}",
-            branch_name, worktree_path
+            "Git worktree created successfully\nBranch: {branch_name}\nPath: {worktree_path:?}"
         );
         Ok(CallToolResult::success(vec![Content::text(output)]))
     }
@@ -251,8 +250,7 @@ impl ClaudeTaskMcpServer {
         if let Err(e) = ApprovalToolPermission::parse(&args.approval_tool_permission) {
             return Err(McpError::invalid_params(
                 format!(
-                    "Invalid approval tool permission format: {}\n\nExpected format: mcp__<server_name>__<tool_name>\nExample: mcp__approval_server__approve_command", 
-                    e
+                    "Invalid approval tool permission format: {e}\n\nExpected format: mcp__<server_name>__<tool_name>\nExample: mcp__approval_server__approve_command"
                 ),
                 None,
             ));

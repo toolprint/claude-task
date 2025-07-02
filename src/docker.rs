@@ -74,9 +74,9 @@ impl DockerManager {
             };
 
             match self.docker.create_volume(create_options).await {
-                Ok(_) => println!("✓ Volume '{}' created", volume_name),
+                Ok(_) => println!("✓ Volume '{volume_name}' created"),
                 Err(e) if e.to_string().contains("already exists") => {
-                    println!("✓ Volume '{}' already exists", volume_name)
+                    println!("✓ Volume '{volume_name}' already exists")
                 }
                 Err(e) => {
                     return Err(anyhow::anyhow!(
@@ -146,7 +146,7 @@ impl DockerManager {
                     stream: Some(output),
                     ..
                 }) => {
-                    print!("{}", output);
+                    print!("{output}");
                 }
                 Ok(BuildInfo {
                     error: Some(error), ..
@@ -363,15 +363,14 @@ impl DockerManager {
         // Create shell command that first copies base directory contents to /home/node, then runs claude
         let claude_cmd_str = claude_cmd.join(" ");
         let full_cmd = format!(
-            "cp -r /home/base/. /home/node/ 2>/dev/null || true && {}",
-            claude_cmd_str
+            "cp -r /home/base/. /home/node/ 2>/dev/null || true && {claude_cmd_str}"
         );
 
         if debug {
             println!("🔍 Container command:");
             println!("   Shell: sh -c");
-            println!("   Full command: {}", full_cmd);
-            println!("   Claude command: {}", claude_cmd_str);
+            println!("   Full command: {full_cmd}");
+            println!("   Claude command: {claude_cmd_str}");
         }
 
         let cmd = vec!["sh".to_string(), "-c".to_string(), full_cmd];
@@ -408,7 +407,7 @@ impl DockerManager {
                 }
                 Ok(_) => {}
                 Err(e) => {
-                    eprintln!("Log stream error: {}", e);
+                    eprintln!("Log stream error: {e}");
                     break;
                 }
             }
@@ -477,7 +476,7 @@ impl DockerManager {
                 "run",
                 "--rm",
                 "-v",
-                &format!("{}:/vol", volume_name),
+                &format!("{volume_name}:/vol"),
                 "alpine",
                 "du",
                 "-sh",

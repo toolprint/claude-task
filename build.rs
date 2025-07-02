@@ -18,13 +18,11 @@ impl ToolExtractor {
         for attr in attrs {
             if attr.path().is_ident("tool") {
                 // Parse the attribute arguments
-                if let Ok(args) = attr.parse_args::<Meta>() {
-                    if let Meta::NameValue(nv) = args {
-                        if nv.path.is_ident("description") {
-                            if let syn::Expr::Lit(expr_lit) = &nv.value {
-                                if let Lit::Str(lit_str) = &expr_lit.lit {
-                                    return Some(lit_str.value());
-                                }
+                if let Ok(Meta::NameValue(nv)) = attr.parse_args::<Meta>() {
+                    if nv.path.is_ident("description") {
+                        if let syn::Expr::Lit(expr_lit) = &nv.value {
+                            if let Lit::Str(lit_str) = &expr_lit.lit {
+                                return Some(lit_str.value());
                             }
                         }
                     }
@@ -74,8 +72,7 @@ fn main() {
     let dest_path = Path::new(&out_dir).join("mcp_help.rs");
     
     let content = format!(
-        "/// Generated MCP help text\npub const MCP_HELP_TEXT: &str = r###\"{}\"###;\n",
-        mcp_help
+        "/// Generated MCP help text\npub const MCP_HELP_TEXT: &str = r###\"{mcp_help}\"###;\n"
     );
     
     fs::write(&dest_path, content).unwrap();
@@ -111,7 +108,7 @@ fn generate_mcp_help_text(tools: Vec<(String, String)>) -> String {
     let max_name_len = tools.iter().map(|(name, _)| name.len()).max().unwrap_or(0);
     
     for (name, description) in tools {
-        help_text.push_str(&format!("  \x1b[1m{:<width$}\x1b[0m  {}\n", name, description, width = max_name_len));
+        help_text.push_str(&format!("  \x1b[1m{name:<max_name_len$}\x1b[0m  {description}\n"));
     }
     
     help_text.push_str("\nThese tools are exposed via the MCP protocol when running 'ct mcp'.\n");

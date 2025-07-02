@@ -194,7 +194,7 @@ fn get_worktree_directory(worktree_base_dir: &str) -> Result<PathBuf> {
     };
 
     fs::create_dir_all(&worktree_path)
-        .with_context(|| format!("Failed to create worktree directory: {:?}", worktree_path))?;
+        .with_context(|| format!("Failed to create worktree directory: {worktree_path:?}"))?;
     Ok(worktree_path)
 }
 
@@ -207,19 +207,19 @@ fn create_git_worktree(
     let repo_root = find_git_repo_root(&current_dir)?;
 
     let sanitized_name = sanitize_branch_name(task_id);
-    let branch_name = format!("{}{}", branch_prefix, sanitized_name);
+    let branch_name = format!("{branch_prefix}{sanitized_name}");
 
     let worktree_base_dir = get_worktree_directory(worktree_base_dir)?;
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let worktree_path = worktree_base_dir.join(format!("{}_{:x}", sanitized_name, timestamp));
+    let worktree_path = worktree_base_dir.join(format!("{sanitized_name}_{timestamp:x}"));
 
     println!("Creating git worktree...");
-    println!("Repository root: {:?}", repo_root);
-    println!("Branch name: {}", branch_name);
-    println!("Worktree path: {:?}", worktree_path);
+    println!("Repository root: {repo_root:?}");
+    println!("Branch name: {branch_name}");
+    println!("Worktree path: {worktree_path:?}");
 
     // Create the worktree
     let output = Command::new("git")
@@ -235,8 +235,8 @@ fn create_git_worktree(
     }
 
     println!("✓ Git worktree created successfully");
-    println!("  Branch: {}", branch_name);
-    println!("  Path: {:?}", worktree_path);
+    println!("  Branch: {branch_name}");
+    println!("  Path: {worktree_path:?}");
 
     Ok((worktree_path, branch_name))
 }
@@ -246,10 +246,9 @@ fn list_git_worktrees(branch_prefix: &str) -> Result<()> {
     let repo_root = find_git_repo_root(&current_dir)?;
 
     println!(
-        "Listing git worktrees with branch prefix '{}'...",
-        branch_prefix
+        "Listing git worktrees with branch prefix '{branch_prefix}'..."
     );
-    println!("Repository root: {:?}", repo_root);
+    println!("Repository root: {repo_root:?}");
     println!();
 
     let output = Command::new("git")
@@ -320,8 +319,7 @@ fn list_git_worktrees(branch_prefix: &str) -> Result<()> {
     // Print all matching worktrees
     if matching_worktrees.is_empty() {
         println!(
-            "No worktrees found matching branch prefix '{}'.",
-            branch_prefix
+            "No worktrees found matching branch prefix '{branch_prefix}'."
         );
     } else {
         for (path, head, branch) in matching_worktrees {
@@ -384,9 +382,9 @@ fn print_worktree_info(path: &str, head: &str, branch: &str) {
         " (worktree)"
     };
 
-    println!("{} {}{}", icon, dir_name, type_label);
-    println!("   Path: {}", path);
-    println!("   Branch: {}", clean_branch);
+    println!("{icon} {dir_name}{type_label}");
+    println!("   Path: {path}");
+    println!("   Branch: {clean_branch}");
     println!(
         "   HEAD: {}",
         if head.len() > 7 { &head[..7] } else { head }
@@ -399,11 +397,11 @@ fn remove_git_worktree(task_id: &str, branch_prefix: &str) -> Result<()> {
     let repo_root = find_git_repo_root(&current_dir)?;
 
     let sanitized_id = sanitize_branch_name(task_id);
-    let branch_name = format!("{}{}", branch_prefix, sanitized_id);
+    let branch_name = format!("{branch_prefix}{sanitized_id}");
 
-    println!("Removing git worktree for task '{}'...", task_id);
-    println!("Repository root: {:?}", repo_root);
-    println!("Target branch: {}", branch_name);
+    println!("Removing git worktree for task '{task_id}'...");
+    println!("Repository root: {repo_root:?}");
+    println!("Target branch: {branch_name}");
     println!();
 
     // First, get list of worktrees to find the one with matching branch
@@ -448,12 +446,12 @@ fn remove_git_worktree(task_id: &str, branch_prefix: &str) -> Result<()> {
     let worktree_path = match worktree_path {
         Some(path) => path,
         None => {
-            println!("❌ No worktree found for branch '{}'", branch_name);
+            println!("❌ No worktree found for branch '{branch_name}'");
             return Ok(());
         }
     };
 
-    println!("Found worktree: {}", worktree_path);
+    println!("Found worktree: {worktree_path}");
 
     // Remove the worktree
     println!("Removing worktree...");
@@ -471,10 +469,10 @@ fn remove_git_worktree(task_id: &str, branch_prefix: &str) -> Result<()> {
         ));
     }
 
-    println!("✓ Worktree removed: {}", worktree_path);
+    println!("✓ Worktree removed: {worktree_path}");
 
     // Delete the branch
-    println!("Deleting branch '{}'...", branch_name);
+    println!("Deleting branch '{branch_name}'...");
     let output = Command::new("git")
         .args(["branch", "-D", &branch_name])
         .current_dir(&repo_root)
@@ -484,19 +482,17 @@ fn remove_git_worktree(task_id: &str, branch_prefix: &str) -> Result<()> {
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         println!(
-            "⚠️  Warning: Failed to delete branch '{}': {}",
-            branch_name, stderr
+            "⚠️  Warning: Failed to delete branch '{branch_name}': {stderr}"
         );
         println!(
-            "   You may need to delete it manually with: git branch -D {}",
-            branch_name
+            "   You may need to delete it manually with: git branch -D {branch_name}"
         );
     } else {
-        println!("✓ Branch deleted: {}", branch_name);
+        println!("✓ Branch deleted: {branch_name}");
     }
 
     println!();
-    println!("✅ Cleanup complete for task '{}'", task_id);
+    println!("✅ Cleanup complete for task '{task_id}'");
 
     Ok(())
 }
@@ -508,8 +504,8 @@ async fn init_shared_volumes(
 ) -> Result<()> {
     println!("Initializing shared Docker volumes for Claude tasks...");
     if debug {
-        println!("🔍 Refresh credentials: {}", refresh_credentials);
-        println!("🔍 Task base home dir: {}", task_base_home_dir);
+        println!("🔍 Refresh credentials: {refresh_credentials}");
+        println!("🔍 Task base home dir: {task_base_home_dir}");
     }
     println!();
 
@@ -553,12 +549,12 @@ fn generate_short_id() -> String {
 }
 
 fn open_ide_in_path(path: &str, ide: &str) -> Result<()> {
-    println!("🚀 Opening {} in {}...", ide, path);
+    println!("🚀 Opening {ide} in {path}...");
     
     let output = Command::new(ide)
         .arg(path)
         .output()
-        .with_context(|| format!("Failed to execute {} command", ide))?;
+        .with_context(|| format!("Failed to execute {ide} command"))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -570,7 +566,7 @@ fn open_ide_in_path(path: &str, ide: &str) -> Result<()> {
         ));
     }
 
-    println!("✓ {} opened successfully", ide);
+    println!("✓ {ide} opened successfully");
     Ok(())
 }
 
@@ -579,7 +575,7 @@ fn select_worktree_interactively(branch_prefix: &str) -> Result<()> {
     let worktrees = get_matching_worktrees(branch_prefix)?;
 
     if worktrees.is_empty() {
-        println!("No claude-task worktrees found matching prefix '{}'.", branch_prefix);
+        println!("No claude-task worktrees found matching prefix '{branch_prefix}'.");
         println!("Create a new worktree with: ct worktree create <task-id>");
         return Ok(());
     }
@@ -618,7 +614,7 @@ fn select_worktree_interactively(branch_prefix: &str) -> Result<()> {
             .and_then(|name| name.to_str())
             .unwrap_or("unknown");
         
-        let display_name = format!("{} ({})", dir_name, clean_branch);
+        let display_name = format!("{dir_name} ({clean_branch})");
         options.push(display_name);
     }
 
@@ -730,8 +726,7 @@ async fn run_claude_task(config: TaskRunConfig<'_>) -> Result<()> {
 
         if config.debug {
             println!(
-                "✓ Approval tool permission format validated: {}",
-                permission_tool_arg
+                "✓ Approval tool permission format validated: {permission_tool_arg}"
             );
         }
     }
@@ -742,7 +737,7 @@ async fn run_claude_task(config: TaskRunConfig<'_>) -> Result<()> {
         None => generate_short_id(),
     };
 
-    println!("Running Claude task with ID: {}", task_id);
+    println!("Running Claude task with ID: {task_id}");
     println!("Prompt: {}", config.prompt);
     println!();
 
@@ -757,7 +752,7 @@ async fn run_claude_task(config: TaskRunConfig<'_>) -> Result<()> {
                     custom_dir
                 ));
             }
-            println!("📁 Using custom workspace directory: {}", custom_dir);
+            println!("📁 Using custom workspace directory: {custom_dir}");
             custom_dir
         }
         Some(None) => {
@@ -771,14 +766,13 @@ async fn run_claude_task(config: TaskRunConfig<'_>) -> Result<()> {
             let (worktree_path, branch_name) =
                 create_git_worktree(&task_id, "claude-task/", config.worktree_base_dir)?;
             println!(
-                "✓ Worktree created: {:?} (branch: {})",
-                worktree_path, branch_name
+                "✓ Worktree created: {worktree_path:?} (branch: {branch_name})"
             );
             
             // Open IDE if requested
             if config.open_editor {
                 if let Err(e) = open_ide_in_path(&worktree_path.to_string_lossy(), "cursor") {
-                    println!("⚠️  Warning: Failed to open IDE: {}", e);
+                    println!("⚠️  Warning: Failed to open IDE: {e}");
                     println!("   Continuing with task execution...");
                 }
             }
@@ -797,7 +791,7 @@ async fn run_claude_task(config: TaskRunConfig<'_>) -> Result<()> {
     }
     let home_volume_exists = docker_manager.check_home_volume_exists().await?;
     if config.debug {
-        println!("   Volume exists: {}", home_volume_exists);
+        println!("   Volume exists: {home_volume_exists}");
     }
 
     if !home_volume_exists {
@@ -884,7 +878,7 @@ async fn run_claude_task(config: TaskRunConfig<'_>) -> Result<()> {
         )
         .await?;
 
-    println!("   Task ID: {}", task_id);
+    println!("   Task ID: {task_id}");
     println!("   Shared volume: claude-task-home");
 
     Ok(())
@@ -902,7 +896,7 @@ async fn list_docker_volumes() -> Result<()> {
     } else {
         println!("Found {} Claude task volumes:", volumes.len());
         for (name, size) in volumes {
-            println!("  📁 {} ({})", name, size);
+            println!("  📁 {name} ({size})");
         }
     }
 
@@ -929,13 +923,13 @@ async fn clean_shared_volumes(debug: bool) -> Result<()> {
             .context("Failed to execute docker volume rm command")?;
 
         if output.status.success() {
-            println!("✓ Volume '{}' removed", volume_name);
+            println!("✓ Volume '{volume_name}' removed");
         } else {
             let stderr = String::from_utf8_lossy(&output.stderr);
             if stderr.contains("no such volume") {
-                println!("⚠️  Volume '{}' not found", volume_name);
+                println!("⚠️  Volume '{volume_name}' not found");
             } else {
-                eprintln!("❌ Failed to remove volume '{}': {}", volume_name, stderr);
+                eprintln!("❌ Failed to remove volume '{volume_name}': {stderr}");
             }
         }
     }
@@ -952,7 +946,7 @@ async fn clean_all_worktrees_and_volumes(
     skip_confirmation: bool,
 ) -> Result<()> {
     println!("🧹 Finding all worktrees and volumes to clean up...");
-    println!("Branch prefix: '{}'", branch_prefix);
+    println!("Branch prefix: '{branch_prefix}'");
     println!();
 
     // Get list of worktrees
@@ -960,8 +954,7 @@ async fn clean_all_worktrees_and_volumes(
 
     if worktrees.is_empty() {
         println!(
-            "No worktrees found matching branch prefix '{}'.",
-            branch_prefix
+            "No worktrees found matching branch prefix '{branch_prefix}'."
         );
         return Ok(());
     }
@@ -1046,9 +1039,9 @@ async fn clean_all_worktrees_and_volumes(
 
                 // Remove worktree (this will also delete the branch)
                 if let Err(e) = remove_git_worktree(task_id, branch_prefix) {
-                    println!("⚠️  Failed to remove worktree for '{}': {}", task_id, e);
+                    println!("⚠️  Failed to remove worktree for '{task_id}': {e}");
                 } else {
-                    println!("✓ Worktree removed for task '{}'", task_id);
+                    println!("✓ Worktree removed for task '{task_id}'");
                 }
 
                 println!();

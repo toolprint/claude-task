@@ -20,7 +20,7 @@ async fn test_mcp_config_validation() {
 
     // Build the binary first
     let build_output = Command::new("cargo")
-        .args(&["build", "--bin", "claude-task"])
+        .args(["build", "--bin", "claude-task"])
         .current_dir(&project_root)
         .output()
         .expect("Failed to build the binary");
@@ -39,7 +39,7 @@ async fn test_mcp_config_validation() {
 
     // Run the CLI command with MCP config
     let output = Command::new(&binary_path)
-        .args(&[
+        .args([
             "run",
             "--mcp-config",
             mcp_config_path.to_str().unwrap(),
@@ -55,41 +55,32 @@ async fn test_mcp_config_validation() {
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     // Print output for debugging
-    println!("STDOUT:\n{}", stdout);
-    println!("STDERR:\n{}", stderr);
+    println!("STDOUT:\n{stdout}");
+    println!("STDERR:\n{stderr}");
 
     // Test that MCP config file validation passed
     assert!(
         stdout.contains("MCP config file found:") || stderr.contains("MCP config file found:"),
-        "MCP config file validation should have passed. Output: {}\nError: {}",
-        stdout,
-        stderr
+        "MCP config file validation should have passed. Output: {stdout}\nError: {stderr}"
     );
 
     // Test that the relative path was expanded to absolute path
     let expected_path = mcp_config_path.to_string_lossy().to_string();
     assert!(
         stdout.contains(&expected_path) || stderr.contains(&expected_path),
-        "Should contain expanded absolute path: {}. Output: {}\nError: {}",
-        expected_path,
-        stdout,
-        stderr
+        "Should contain expanded absolute path: {expected_path}. Output: {stdout}\nError: {stderr}"
     );
 
     // Test that debug mode is enabled
     assert!(
         stdout.contains("🔍 Debug mode enabled") || stderr.contains("🔍 Debug mode enabled"),
-        "Debug mode should be enabled. Output: {}\nError: {}",
-        stdout,
-        stderr
+        "Debug mode should be enabled. Output: {stdout}\nError: {stderr}"
     );
 
     // Test that --yes flag worked (skipped confirmation)
     assert!(
         stdout.contains("✓ Skipping confirmation") || stderr.contains("✓ Skipping confirmation"),
-        "--yes flag should skip confirmation. Output: {}\nError: {}",
-        stdout,
-        stderr
+        "--yes flag should skip confirmation. Output: {stdout}\nError: {stderr}"
     );
 }
 
@@ -100,7 +91,7 @@ async fn test_mcp_config_file_not_found() {
 
     // Build the binary first
     let build_output = Command::new("cargo")
-        .args(&["build", "--bin", "claude-task"])
+        .args(["build", "--bin", "claude-task"])
         .current_dir(&project_root)
         .output()
         .expect("Failed to build the binary");
@@ -118,7 +109,7 @@ async fn test_mcp_config_file_not_found() {
 
     // Run with non-existent MCP config file
     let output = Command::new(&binary_path)
-        .args(&[
+        .args([
             "run",
             "--mcp-config",
             "nonexistent.json",
@@ -139,8 +130,7 @@ async fn test_mcp_config_file_not_found() {
 
     assert!(
         stderr.contains("MCP config file not found"),
-        "Should show MCP config file not found error. Error: {}",
-        stderr
+        "Should show MCP config file not found error. Error: {stderr}"
     );
 }
 
@@ -151,7 +141,7 @@ async fn test_mcp_config_relative_path() {
 
     // Build the binary first
     let build_output = Command::new("cargo")
-        .args(&["build", "--bin", "claude-task"])
+        .args(["build", "--bin", "claude-task"])
         .current_dir(&project_root)
         .output()
         .expect("Failed to build the binary");
@@ -169,7 +159,7 @@ async fn test_mcp_config_relative_path() {
 
     // Run with relative path to MCP config
     let output = Command::new(&binary_path)
-        .args(&[
+        .args([
             "run",
             "--mcp-config",
             "tests/test.mcp.json", // relative path
@@ -187,9 +177,7 @@ async fn test_mcp_config_relative_path() {
     // Should successfully find and validate the file
     assert!(
         stdout.contains("MCP config file found:") || stderr.contains("MCP config file found:"),
-        "Should find MCP config file with relative path. Output: {}\nError: {}",
-        stdout,
-        stderr
+        "Should find MCP config file with relative path. Output: {stdout}\nError: {stderr}"
     );
 
     // Should show the expanded absolute path
@@ -201,9 +189,6 @@ async fn test_mcp_config_relative_path() {
 
     assert!(
         stdout.contains(&expected_absolute) || stderr.contains(&expected_absolute),
-        "Should show expanded absolute path: {}. Output: {}\nError: {}",
-        expected_absolute,
-        stdout,
-        stderr
+        "Should show expanded absolute path: {expected_absolute}. Output: {stdout}\nError: {stderr}"
     );
 }

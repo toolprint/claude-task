@@ -59,7 +59,7 @@ pub async fn extract_keychain_credentials() -> Result<String> {
     #[cfg(target_os = "macos")]
     {
         if let Err(e) = request_biometric_authentication().await {
-            println!("⚠️  Biometric authentication failed: {}", e);
+            println!("⚠️  Biometric authentication failed: {e}");
             println!("   Falling back to keychain access without biometrics");
         }
     }
@@ -109,10 +109,10 @@ async fn request_biometric_authentication() -> Result<()> {
 
 pub fn read_and_filter_claude_config() -> Result<ClaudeConfig> {
     let home_dir = std::env::var("HOME").context("Could not find HOME directory")?;
-    let claude_config_path = format!("{}/.claude.json", home_dir);
+    let claude_config_path = format!("{home_dir}/.claude.json");
 
     let content = fs::read_to_string(&claude_config_path)
-        .with_context(|| format!("Failed to read {}", claude_config_path))?;
+        .with_context(|| format!("Failed to read {claude_config_path}"))?;
 
     let full_config: FullClaudeConfig =
         serde_json::from_str(&content).context("Failed to parse claude config JSON")?;
@@ -137,9 +137,9 @@ pub async fn setup_credentials_and_config(task_base_home_dir: &str, debug: bool)
     };
 
     // Create output directories
-    let claude_dir = format!("{}/.claude", base_dir);
+    let claude_dir = format!("{base_dir}/.claude");
     fs::create_dir_all(&claude_dir)
-        .with_context(|| format!("Failed to create directory: {}", claude_dir))?;
+        .with_context(|| format!("Failed to create directory: {claude_dir}"))?;
 
     // Extract keychain credentials with biometric authentication
     println!("Extracting keychain credentials...");
@@ -148,10 +148,10 @@ pub async fn setup_credentials_and_config(task_base_home_dir: &str, debug: bool)
         .context("Failed to extract keychain credentials")?;
 
     // Write credentials to file in .claude directory
-    let credentials_path = format!("{}/.credentials.json", claude_dir);
+    let credentials_path = format!("{claude_dir}/.credentials.json");
     fs::write(&credentials_path, credentials).context("Failed to write credentials file")?;
 
-    println!("✓ Keychain credentials extracted to {}", credentials_path);
+    println!("✓ Keychain credentials extracted to {credentials_path}");
 
     // Read and filter claude config
     println!("Reading and filtering claude config...");
@@ -162,10 +162,10 @@ pub async fn setup_credentials_and_config(task_base_home_dir: &str, debug: bool)
     let filtered_json = serde_json::to_string_pretty(&filtered_config)
         .context("Failed to serialize filtered config")?;
 
-    let config_path = format!("{}/.claude.json", base_dir);
+    let config_path = format!("{base_dir}/.claude.json");
     fs::write(&config_path, filtered_json).context("Failed to write filtered config file")?;
 
-    println!("✓ Filtered claude config written to {}", config_path);
+    println!("✓ Filtered claude config written to {config_path}");
 
     // Create Docker volume with bind mount to the setup directory
     println!("Creating Docker volume 'claude-task-home'...");
@@ -200,7 +200,7 @@ async fn create_docker_home_volume(base_dir: &str) -> Result<()> {
             "--opt",
             "type=bind",
             "--opt",
-            &format!("device={}", base_dir),
+            &format!("device={base_dir}"),
             "--opt",
             "o=bind,ro", // Read-only bind mount
             "--label",
@@ -216,8 +216,7 @@ async fn create_docker_home_volume(base_dir: &str) -> Result<()> {
     }
 
     println!(
-        "✓ Docker volume 'claude-task-home' created with read-only bind mount to {}",
-        base_dir
+        "✓ Docker volume 'claude-task-home' created with read-only bind mount to {base_dir}"
     );
 
     Ok(())
@@ -257,7 +256,7 @@ async fn inspect_docker_volume_contents() -> Result<()> {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     println!("📁 Volume contents:");
-    println!("{}", stdout);
+    println!("{stdout}");
 
     // Also show directory structure
     let tree_output = Command::new("docker")
@@ -285,7 +284,7 @@ async fn inspect_docker_volume_contents() -> Result<()> {
                     let depth = path.matches('/').count();
                     let indent = "  ".repeat(depth);
                     let name = path.split('/').next_back().unwrap_or(path);
-                    println!("{}├── {}", indent, name);
+                    println!("{indent}├── {name}");
                 }
             }
         }

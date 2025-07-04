@@ -183,6 +183,18 @@ cargo test -- --nocapture
 cargo test test_mcp_config_validation
 ```
 
+## Build System Details
+
+### Build Script (`build.rs`)
+- Parses `src/mcp.rs` to extract MCP tool definitions at compile time
+- Generates `mcp_help.rs` with tool documentation
+- Uses `syn` crate for AST parsing and `quote` for code generation
+
+### Multi-platform Docker Build
+- Uses `docker-bake.hcl` for buildx configuration
+- Supports both AMD64 and ARM64 architectures
+- Multi-stage Dockerfile optimizes image size
+
 ## MCP Server Development
 
 ### Running the MCP Server
@@ -203,3 +215,29 @@ just task "test prompt" --approval-tool-permission "mcp__approval_server__approv
 - Approval tool permissions must follow format: `mcp__<server_name>__<tool_name>`
 - Global options (debug, worktree-base-dir, etc.) are embedded in each tool
 - MCP config files can be passed through and mounted in containers
+- Build script auto-generates help text from tool definitions
+
+## Common Development Tasks
+
+### Adding a New CLI Command
+1. Add the command variant to the `Commands` enum in `main.rs`
+2. Implement the command handler in the appropriate module
+3. If exposing via MCP, add corresponding tool in `mcp.rs`
+4. Update tests if needed
+
+### Debugging Docker Container Issues
+```bash
+# Run with debug logging
+RUST_LOG=debug just run <command>
+
+# Inspect Docker volumes
+docker volume ls | grep claude-task
+docker volume inspect claude-task-home
+
+# Run container interactively for debugging
+docker run -it --rm \
+  -v claude-task-home:/home/base:ro \
+  -v $(pwd):/workspace \
+  ghcr.io/anthropics/claude-code-docker-base \
+  /bin/bash
+```

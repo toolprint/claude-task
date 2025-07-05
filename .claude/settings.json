@@ -16,11 +16,16 @@
             "Bash(cargo audit:*)",
             "Bash(cargo update:*)",
             "Bash(cargo run:*)",
+            "Bash(ls:*)",
+            "Bash(find:*)",
             "Bash(grep:*)",
             "Bash(rg:*)",
             "Bash(tq:*)",
             "WebFetch(domain:github.com)",
-            "WebFetch(domain:raw.githubusercontent.com)"
+            "WebFetch(domain:raw.githubusercontent.com)",
+            "WebFetch(domain:docs.anthropic.com)",
+            "mcp__git__git_log",
+            "mcp__git__git_status"
         ],
         "deny": [
             "Bash(./target/debug/claude-task:*)",

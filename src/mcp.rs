@@ -83,6 +83,7 @@ pub struct RunTaskOptions {
     pub approval_tool_permission: String,
     pub debug: Option<bool>,
     pub mcp_config: Option<String>,
+    pub web_view_proxy_port: Option<u16>,
 }
 
 #[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
@@ -278,6 +279,7 @@ impl ClaudeTaskMcpServer {
             task_base_home_dir: &task_base_home_dir,
             open_editor: false, // Don't auto-open IDE in MCP mode
             ht_mcp_port: None,  // HT-MCP port not supported via MCP interface
+            web_view_proxy_port: args.web_view_proxy_port.unwrap_or(4618),
         };
 
         run_claude_task(config)

@@ -31,6 +31,7 @@ struct TaskRunConfig<'a> {
     task_base_home_dir: &'a str,
     open_editor: bool,
     ht_mcp_port: Option<u16>,
+    web_view_proxy_port: u16,
 }
 
 use credentials::setup_credentials_and_config;
@@ -145,6 +146,9 @@ enum Commands {
         /// Port to expose for HT-MCP web interface (e.g., 8080)
         #[arg(long)]
         ht_mcp_port: Option<u16>,
+        /// Port to expose for web view proxy to see terminal commands the task runs (default: 4618)
+        #[arg(long, default_value = "4618")]
+        web_view_proxy_port: u16,
     },
     /// Clean up all claude-task git worktrees and docker volumes
     #[command(visible_alias = "c")]
@@ -811,6 +815,7 @@ async fn run_claude_task(config: TaskRunConfig<'_>) -> Result<()> {
         task_id: task_id.clone(),
         workspace_path: workspace_path.clone(),
         ht_mcp_port: config.ht_mcp_port,
+        web_view_proxy_port: config.web_view_proxy_port,
         ..ClaudeTaskConfig::default()
     };
 
@@ -822,6 +827,7 @@ async fn run_claude_task(config: TaskRunConfig<'_>) -> Result<()> {
         if let Some(port) = claude_config.ht_mcp_port {
             println!("   - HT-MCP port: {port}");
         }
+        println!("   - Web view proxy port: {}", claude_config.web_view_proxy_port);
     }
 
     // Create volumes (npm and node cache)
@@ -1203,6 +1209,7 @@ async fn main() -> Result<()> {
             yes,
             open_editor,
             ht_mcp_port,
+            web_view_proxy_port,
         }) => {
             let debug_mode = cli.debug; // Use global debug flag
             let config = TaskRunConfig {
@@ -1218,6 +1225,7 @@ async fn main() -> Result<()> {
                 task_base_home_dir: &cli.task_base_home_dir,
                 open_editor,
                 ht_mcp_port,
+                web_view_proxy_port,
             };
             run_claude_task(config).await?;
         }

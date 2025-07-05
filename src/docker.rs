@@ -25,6 +25,7 @@ pub struct ClaudeTaskConfig {
     pub dockerfile_path: String,
     pub context_path: String,
     pub ht_mcp_port: Option<u16>,
+    pub web_view_proxy_port: u16,
 }
 
 impl Default for ClaudeTaskConfig {
@@ -39,6 +40,7 @@ impl Default for ClaudeTaskConfig {
             dockerfile_path: "Dockerfile".to_string(),
             context_path: "claude-task".to_string(),
             ht_mcp_port: None,
+            web_view_proxy_port: 4618,
         }
     }
 }
@@ -351,13 +353,12 @@ impl DockerManager {
                 }]),
             );
 
-            // Expose nginx proxy port (container 4618 -> host port+1000)
-            let proxy_port = ht_mcp_port + 1000;
+            // Expose nginx proxy port (container 4618 -> host configured port)
             port_bindings.insert(
                 "4618/tcp".to_string(),
                 Some(vec![PortBinding {
                     host_ip: Some("0.0.0.0".to_string()),
-                    host_port: Some(proxy_port.to_string()),
+                    host_port: Some(config.web_view_proxy_port.to_string()),
                 }]),
             );
 
@@ -365,7 +366,7 @@ impl DockerManager {
 
             println!("🌐 HT-MCP web interface will be available at:");
             println!("   Direct HT-MCP:       http://localhost:{ht_mcp_port}");
-            println!("   Nginx Proxy:         http://localhost:{proxy_port} (recommended for WebSockets)");
+            println!("   Nginx Proxy:         http://localhost:{} (recommended for WebSockets)", config.web_view_proxy_port);
         }
 
         // Build the claude command

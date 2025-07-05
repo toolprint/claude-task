@@ -125,6 +125,9 @@ pub fn read_and_filter_claude_config() -> Result<ClaudeConfig> {
     })
 }
 
+// Note: MCP configuration is now handled dynamically in the container
+// using 'claude mcp add-json' commands instead of static config files
+
 pub async fn setup_credentials_and_config(task_base_home_dir: &str, debug: bool) -> Result<()> {
     println!("Setting up Claude configuration...");
 
@@ -166,6 +169,10 @@ pub async fn setup_credentials_and_config(task_base_home_dir: &str, debug: bool)
     fs::write(&config_path, filtered_json).context("Failed to write filtered config file")?;
 
     println!("✓ Filtered claude config written to {config_path}");
+
+    // Note: MCP configuration is now handled dynamically in the container
+    // using 'claude mcp add-json' commands instead of static files
+    println!("✓ MCP servers will be configured dynamically in the container");
 
     // Create Docker volume with bind mount to the setup directory
     println!("Creating Docker volume 'claude-task-home'...");

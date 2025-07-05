@@ -8,12 +8,18 @@ ENV TZ="$TZ"
 # AMD64 stage
 FROM build-linux-amd64 AS base-amd64
 ARG TARGETARCH=amd64
-
+COPY modules/ht-mcp/release/latest/ht-mcp-linux-x86_64 /usr/local/bin/ht-mcp
+RUN chmod +x /usr/local/bin/ht-mcp && \
+    file /usr/local/bin/ht-mcp && \
+    ldd /usr/local/bin/ht-mcp || echo "Binary is statically linked or incompatible"
 
 # ARM64 stage  
 FROM build-linux-arm64 AS base-arm64
 ARG TARGETARCH=arm64
-
+COPY modules/ht-mcp/release/latest/ht-mcp-linux-aarch64 /usr/local/bin/ht-mcp
+RUN chmod +x /usr/local/bin/ht-mcp && \
+    file /usr/local/bin/ht-mcp && \
+    ldd /usr/local/bin/ht-mcp || echo "Binary is statically linked or incompatible"
 
 # Final stage
 FROM base-${TARGETARCH} AS base
@@ -40,6 +46,8 @@ RUN apt update && apt install -y less \
     aggregate \
     jq \
     ripgrep \
+    curl \
+    nginx \
     && rm -rf /var/lib/apt/lists/*
 
 ARG USERNAME=node
@@ -56,6 +64,11 @@ RUN SNIPPET="export PROMPT_COMMAND='history -a' && export HISTFILE=/commandhisto
 
 # Set `DEVCONTAINER` environment variable to help with orientation
 ENV DEVCONTAINER=true
+
+# Copy the entrypoint script and nginx config (before switching to node user)
+COPY docker-entrypoint.sh /usr/local/bin/claude-entrypoint.sh
+COPY nginx.conf /etc/nginx/ht-mcp-proxy.conf
+RUN chmod +x /usr/local/bin/claude-entrypoint.sh
 
 # Create workspace and config directories and set permissions
 RUN mkdir -p /workspace /home/node/.claude && \
@@ -87,5 +100,5 @@ RUN npm install -g @anthropic-ai/claude-code
 # Set working directory
 WORKDIR /workspace
 
-# Reset the entrypoint to nothing
-ENTRYPOINT []
+# Set the entrypoint
+ENTRYPOINT ["/usr/local/bin/claude-entrypoint.sh"]

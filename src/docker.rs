@@ -24,6 +24,7 @@ pub struct ClaudeTaskConfig {
     pub timezone: String,
     pub dockerfile_path: String,
     pub context_path: String,
+    pub ht_mcp_port: Option<u16>,
 }
 
 impl Default for ClaudeTaskConfig {
@@ -37,6 +38,7 @@ impl Default for ClaudeTaskConfig {
             timezone: "America/New_York".to_string(),
             dockerfile_path: "Dockerfile".to_string(),
             context_path: "claude-task".to_string(),
+            ht_mcp_port: None,
         }
     }
 }
@@ -323,7 +325,7 @@ impl DockerManager {
             "POWERLEVEL9K_DISABLE_GITSTATUS=true".to_string(),
         ];
 
-        let host_config = HostConfig {
+        let mut host_config = HostConfig {
             mounts: Some(mounts),
             restart_policy: Some(RestartPolicy {
                 name: Some(RestartPolicyNameEnum::NO),
@@ -332,6 +334,38 @@ impl DockerManager {
             auto_remove: Some(true),
             ..Default::default()
         };
+
+        // Add port mapping for HT-MCP if specified
+        if let Some(ht_mcp_port) = config.ht_mcp_port {
+            use bollard::models::PortBinding;
+            use std::collections::HashMap;
+            
+            let mut port_bindings = HashMap::new();
+            
+            // Expose direct HT-MCP port (container 3618 -> host 3618)
+            port_bindings.insert(
+                "3618/tcp".to_string(),
+                Some(vec![PortBinding {
+                    host_ip: Some("0.0.0.0".to_string()),
+                    host_port: Some("3618".to_string()),
+                }]),
+            );
+            
+            // Expose nginx proxy port (container 4618 -> host 4618)
+            port_bindings.insert(
+                "4618/tcp".to_string(),
+                Some(vec![PortBinding {
+                    host_ip: Some("0.0.0.0".to_string()),
+                    host_port: Some("4618".to_string()),
+                }]),
+            );
+            
+            host_config.port_bindings = Some(port_bindings);
+            
+            println!("🌐 HT-MCP web interface will be available at:");
+            println!("   Direct HT-MCP:       http://localhost:3618");
+            println!("   Nginx Proxy:         http://localhost:4618 (recommended for WebSockets)");
+        }
 
         // Build the claude command
         let mut claude_cmd = vec!["claude".to_string()];
@@ -360,22 +394,17 @@ impl DockerManager {
             format!("\"{}\"", prompt.replace("\"", "\\\"")),
         ]);
 
-        // Create shell command that first copies base directory contents to /home/node, then runs claude
-        let claude_cmd_str = claude_cmd.join(" ");
-        let full_cmd = format!(
-            "cp -r /home/base/. /home/node/ 2>/dev/null || true && {claude_cmd_str}"
-        );
+        // Call the entrypoint script manually since Docker exec bypasses ENTRYPOINT
+        // Wrap in shell to ensure proper execution
+        let entrypoint_cmd = format!("/usr/local/bin/claude-entrypoint.sh {}", claude_cmd.join(" "));
+        let cmd = vec!["/bin/bash".to_string(), "-c".to_string(), entrypoint_cmd];
 
         if debug {
             println!("🔍 Container command:");
-            println!("   Shell: sh -c");
-            println!("   Full command: {full_cmd}");
-            println!("   Claude command: {claude_cmd_str}");
+            println!("   Calling entrypoint manually: {}", cmd.join(" "));
         }
 
-        let cmd = vec!["sh".to_string(), "-c".to_string(), full_cmd];
-
-        let config = Config {
+        let mut container_config = Config {
             image: Some("claude-task:dev".to_string()),
             cmd: Some(cmd),
             env: Some(env_vars),
@@ -383,8 +412,17 @@ impl DockerManager {
             host_config: Some(host_config),
             ..Default::default()
         };
+        
+        // Add exposed ports if HT-MCP is enabled
+        if config.ht_mcp_port.is_some() {
+            use std::collections::HashMap;
+            let mut exposed_ports = HashMap::new();
+            exposed_ports.insert("4618/tcp".to_string(), HashMap::new()); // nginx proxy
+            exposed_ports.insert("3618/tcp".to_string(), HashMap::new()); // direct HT-MCP
+            container_config.exposed_ports = Some(exposed_ports);
+        }
 
-        Ok(config)
+        Ok(container_config)
     }
 
     async fn stream_container_logs(&self, container_id: &str) -> Result<()> {

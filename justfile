@@ -241,6 +241,21 @@ task prompt *args: build
     @echo "🤖 Running Claude task: {{prompt}}"
     cargo run -- run "{{prompt}}" {{args}}
 
+# Git Submodule Commands
+
+# Recursively sync git submodules to their specified branches
+[group('git')]
+sync-modules:
+    @echo "🔄 Syncing git submodules..."
+    git submodule update --init --recursive --remote
+
+# Build ht-mcp submodule release
+[group('git')]
+build-ht-mcp version="latest":
+    @echo "🔨 Building ht-mcp submodule (version: {{version}})..."
+    @if [ ! -d "modules/ht-mcp" ]; then echo "❌ ht-mcp submodule not found. Run 'just sync-modules' first."; exit 1; fi
+    cd modules/ht-mcp && chmod +x build-release.sh && ./build-release.sh {{version}}
+
 # Docker Commands
 
 # Build Docker image using buildx

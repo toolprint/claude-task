@@ -30,6 +30,7 @@ struct TaskRunConfig<'a> {
     worktree_base_dir: &'a str,
     task_base_home_dir: &'a str,
     open_editor: bool,
+    ht_mcp_port: Option<u16>,
 }
 
 use credentials::setup_credentials_and_config;
@@ -141,6 +142,9 @@ enum Commands {
         /// Open IDE in worktree after task creation
         #[arg(short = 'e', long)]
         open_editor: bool,
+        /// Port to expose for HT-MCP web interface (e.g., 8080)
+        #[arg(long)]
+        ht_mcp_port: Option<u16>,
     },
     /// Clean up all claude-task git worktrees and docker volumes
     #[command(visible_alias = "c")]
@@ -686,6 +690,18 @@ async fn run_claude_task(config: TaskRunConfig<'_>) -> Result<()> {
             println!("⚠️  WARNING: No approval tool permission specified!");
             println!("   This will run Claude with --dangerously-skip-permissions");
             println!("   Claude will have unrestricted access to execute commands without user approval.");
+            
+            // Extra warning if HT-MCP is enabled
+            if config.ht_mcp_port.is_some() {
+                println!();
+                println!("🚨 ADDITIONAL WARNING: HT-MCP mode is enabled!");
+                println!("   Skipping permissions defeats the purpose of HT-MCP integration.");
+                println!("   Claude will be able to use built-in tools instead of HT-MCP,");
+                println!("   making the web interface monitoring ineffective.");
+                println!("   Consider providing an approval tool permission instead.");
+            }
+            
+            println!();
             println!("   This is DANGEROUS and should only be used in trusted environments.");
             println!();
 
@@ -806,6 +822,7 @@ async fn run_claude_task(config: TaskRunConfig<'_>) -> Result<()> {
     let mut claude_config = ClaudeTaskConfig {
         task_id: task_id.clone(),
         workspace_path: workspace_path.clone(),
+        ht_mcp_port: config.ht_mcp_port,
         ..ClaudeTaskConfig::default()
     };
 
@@ -814,6 +831,9 @@ async fn run_claude_task(config: TaskRunConfig<'_>) -> Result<()> {
         println!("   - Task ID: {}", claude_config.task_id);
         println!("   - Workspace path: {}", claude_config.workspace_path);
         println!("   - Timezone: {}", claude_config.timezone);
+        if let Some(port) = claude_config.ht_mcp_port {
+            println!("   - HT-MCP port: {}", port);
+        }
     }
 
     // Create volumes (npm and node cache)
@@ -1196,6 +1216,7 @@ async fn main() -> Result<()> {
             mcp_config,
             yes,
             open_editor,
+            ht_mcp_port,
         }) => {
             let debug_mode = cli.debug; // Use global debug flag
             let config = TaskRunConfig {
@@ -1210,6 +1231,7 @@ async fn main() -> Result<()> {
                 worktree_base_dir: &cli.worktree_base_dir,
                 task_base_home_dir: &cli.task_base_home_dir,
                 open_editor,
+                ht_mcp_port,
             };
             run_claude_task(config).await?;
         }

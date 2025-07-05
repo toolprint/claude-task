@@ -81,16 +81,16 @@ just install
 claude-task --help
 
 # Setup credentials and environment
-claude-task setup
+claude-task setup  # or: claude-task s
 
 # Git worktree management
-claude-task worktree <command>
+claude-task worktree <command>  # or: claude-task wt <command>
 
 # Docker volume management  
-claude-task volume <command>
+claude-task docker <command>  # or: claude-task d <command>
 
 # Run Claude tasks
-claude-task run <prompt>
+claude-task run <prompt>  # or: claude-task r <prompt>
 
 # Run with HT-MCP web terminal (recommended)
 just run-ht-mcp                    # Use default comprehensive prompt
@@ -99,10 +99,13 @@ just run-ht-mcp port=8080          # Custom port
 just run-ht-mcp prompt="Custom task" port=3618  # Custom prompt and port
 
 # Clean up resources
-claude-task clean
+claude-task clean  # or: claude-task c
 
 # Start MCP server (for Claude Code integration)
 claude-task mcp
+
+# Show version information
+claude-task version  # or: claude-task v
 ```
 
 ### MCP Server Usage
@@ -122,9 +125,9 @@ The MCP server exposes the following tools for use within Claude Code:
 - `create_worktree` - Create a git worktree for a task
 - `list_worktree` - List current git worktrees  
 - `remove_worktree` - Remove and clean up a worktree
-- `init_volume` - Initialize Docker volumes
-- `list_volume` - List Docker volumes
-- `clean_volume` - Clean Docker volumes
+- `init_docker_volume` - Initialize Docker volumes
+- `list_docker_volume` - List Docker volumes
+- `clean_docker_volume` - Clean Docker volumes
 - `run_task` - Run a Claude task in a Docker container
 - `clean` - Clean up all worktrees and volumes
 
@@ -156,7 +159,19 @@ Example MCP configuration file:
    claude-task setup
    ```
 
-2. **Run a Task**
+2. **Docker Volume Management** (Optional - automatically handled by `run`)
+   ```bash
+   # Initialize Docker volumes
+   claude-task docker init  # or: claude-task d i
+   
+   # List Docker volumes
+   claude-task docker list  # or: claude-task d l
+   
+   # Clean Docker volumes
+   claude-task docker clean  # or: claude-task d c
+   ```
+
+3. **Run a Task**
    ```bash
    # Run Claude with a prompt (creates worktree automatically)
    claude-task run "Analyze this codebase and suggest improvements"
@@ -165,7 +180,7 @@ Example MCP configuration file:
    claude-task run "Review the API design" --task-id my-review
    
    # Use current directory instead of creating worktree
-   claude-task run "Quick code review" --use-current-dir
+   claude-task run "Quick code review" --workspace-dir
    
    # Run with MCP configuration and approval tool permission
    claude-task run "Implement new feature" \
@@ -180,19 +195,22 @@ Example MCP configuration file:
    # Via NGINX proxy: http://localhost:4618 (recommended)
    ```
 
-3. **Manual Worktree Management**
+4. **Manual Worktree Management**
    ```bash
    # Create a worktree manually
-   claude-task worktree create my-feature
+   claude-task worktree create my-feature  # or: claude-task wt c my-feature
    
    # List existing worktrees
-   claude-task worktree list
+   claude-task worktree list  # or: claude-task wt l
    
    # Remove a worktree
-   claude-task worktree remove my-feature
+   claude-task worktree remove my-feature  # or: claude-task wt rm my-feature
+   
+   # Open a worktree in your IDE
+   claude-task worktree open  # or: claude-task wt o
    ```
 
-4. **Cleanup**
+5. **Cleanup**
    ```bash
    # Clean up all resources (worktrees and volumes)
    claude-task clean

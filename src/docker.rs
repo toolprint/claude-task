@@ -320,12 +320,17 @@ impl DockerManager {
         }
 
         // Environment variables
-        let env_vars = vec![
+        let mut env_vars = vec![
             format!("TASK_ID={}", config.task_id),
             "NODE_OPTIONS=--max-old-space-size=4096".to_string(),
             "CLAUDE_CONFIG_DIR=/home/node/.claude".to_string(),
             "POWERLEVEL9K_DISABLE_GITSTATUS=true".to_string(),
         ];
+
+        // Add CCO MCP URL if HT-MCP is enabled
+        if config.ht_mcp_port.is_some() {
+            env_vars.push("CCO_MCP_URL=http://host.docker.internal:8660/mcp".to_string());
+        }
 
         let mut host_config = HostConfig {
             mounts: Some(mounts),
@@ -337,23 +342,14 @@ impl DockerManager {
             ..Default::default()
         };
 
-        // Add port mapping for HT-MCP if specified
-        if let Some(ht_mcp_port) = config.ht_mcp_port {
+        // Add port mapping for web view proxy if specified
+        if config.web_view_proxy_port > 0 {
             use bollard::models::PortBinding;
             use std::collections::HashMap;
 
             let mut port_bindings = HashMap::new();
 
-            // Expose direct HT-MCP port (container 3618 -> host port)
-            port_bindings.insert(
-                "3618/tcp".to_string(),
-                Some(vec![PortBinding {
-                    host_ip: Some("0.0.0.0".to_string()),
-                    host_port: Some(ht_mcp_port.to_string()),
-                }]),
-            );
-
-            // Expose nginx proxy port (container 4618 -> host configured port)
+            // Only expose nginx proxy port (container 4618 -> host configured port)
             port_bindings.insert(
                 "4618/tcp".to_string(),
                 Some(vec![PortBinding {
@@ -364,9 +360,8 @@ impl DockerManager {
 
             host_config.port_bindings = Some(port_bindings);
 
-            println!("🌐 HT-MCP web interface will be available at:");
-            println!("   Direct HT-MCP:       http://localhost:{ht_mcp_port}");
-            println!("   Nginx Proxy:         http://localhost:{} (recommended for WebSockets)", config.web_view_proxy_port);
+            println!("🌐 Web interface will be available at:");
+            println!("   Web Proxy: http://localhost:{} (NGINX proxy with fallback page)", config.web_view_proxy_port);
         }
 
         // Build the claude command
@@ -393,31 +388,13 @@ impl DockerManager {
 
         claude_cmd.extend(vec!["-p".to_string(), prompt.to_string()]);
 
-        // Call the entrypoint script manually since Docker exec bypasses ENTRYPOINT
-        // Wrap in shell to ensure proper execution
-        // Properly escape all arguments for shell
-        let escaped_args: Vec<String> = claude_cmd
-            .iter()
-            .map(|arg| {
-                if arg.contains(' ') || arg.contains('\'') || arg.contains('"') {
-                    // Use single quotes and escape any single quotes in the argument
-                    format!("'{}'", arg.replace("'", "'\\''"))
-                } else {
-                    arg.clone()
-                }
-            })
-            .collect();
-        
-        let entrypoint_cmd = format!(
-            "/usr/local/bin/claude-entrypoint.sh {}",
-            escaped_args.join(" ")
-        );
-        let cmd = vec!["/bin/bash".to_string(), "-c".to_string(), entrypoint_cmd.clone()];
+        // The entrypoint script will run automatically, we just need to pass the claude command
+        let cmd = claude_cmd;
 
         if debug {
             println!("🔍 Container command:");
-            println!("   Entrypoint command: {entrypoint_cmd}");
-            println!("   Full command: {}", cmd.join(" "));
+            println!("   Claude command: {}", cmd.join(" "));
+            println!("   (Entrypoint script will run automatically)");
         }
 
         let mut container_config = Config {
@@ -429,12 +406,11 @@ impl DockerManager {
             ..Default::default()
         };
 
-        // Add exposed ports if HT-MCP is enabled
-        if config.ht_mcp_port.is_some() {
+        // Add exposed ports if web view proxy is enabled
+        if config.web_view_proxy_port > 0 {
             use std::collections::HashMap;
             let mut exposed_ports = HashMap::new();
-            exposed_ports.insert("4618/tcp".to_string(), HashMap::new()); // nginx proxy
-            exposed_ports.insert("3618/tcp".to_string(), HashMap::new()); // direct HT-MCP
+            exposed_ports.insert("4618/tcp".to_string(), HashMap::new()); // nginx proxy only
             container_config.exposed_ports = Some(exposed_ports);
         }
 

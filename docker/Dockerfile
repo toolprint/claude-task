@@ -28,7 +28,7 @@ FROM base-${TARGETARCH} AS base
 ENV NPM_CONFIG_PREFIX=/usr/local/share/npm-global
 ENV PATH=$PATH:/usr/local/share/npm-global/bin
 
-# Install basic development tools and iptables/ipset
+# Install basic development tools and nginx
 RUN apt update && apt install -y less \
     git \
     procps \

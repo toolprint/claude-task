@@ -76,6 +76,9 @@ RUN mkdir -p /workspace /home/node/.claude && \
 
 WORKDIR /workspace
 
+# Copy the CLAUDE.local.md file to the workspace
+COPY docker/CLAUDE.local.md CLAUDE.local.md
+
 # Switch to non-root user for npm global packages
 USER node
 

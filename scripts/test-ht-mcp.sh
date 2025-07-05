@@ -12,7 +12,7 @@ echo
 
 # Run setup to ensure credentials are configured
 echo "2. Running setup..."
-./target/release/claude-task setup || { echo "Setup failed"; exit 1; }
+../target/release/claude-task setup || { echo "Setup failed"; exit 1; }
 echo "✓ Setup complete"
 echo
 
@@ -23,7 +23,6 @@ echo
 echo "   RECOMMENDED - With CCO approval tool:"
 echo "   ./run-with-ht-mcp.sh -a                                 # Use defaults with approval"
 echo "   ./run-with-ht-mcp.sh -a -d                             # Debug mode with approval"
-echo "   ./run-ht-mcp-with-approval.sh                          # Dedicated approval script"
 echo
 echo "   WITHOUT approval (not recommended - Claude can bypass HT-MCP):"
 echo "   ./run-with-ht-mcp.sh                                    # Use defaults (port 3618)"
@@ -31,3 +30,5 @@ echo "   ./run-with-ht-mcp.sh 8080                              # Use port 8080"
 echo "   ./run-with-ht-mcp.sh 3618 'Create a Python hello world' # Custom prompt"
 echo
 echo "   Run './run-with-ht-mcp.sh --help' for more information"
+echo
+echo "   Note: Scripts are now in the scripts/ directory"

@@ -21,7 +21,7 @@ Test that nginx can properly proxy HT-MCP's web interface, including WebSocket c
    ```bash
    cd modules/ht-mcp
    cargo build --release
-   cd ../../local-test
+   cd ../../examples/local-nginx-test
    ```
 
 ## Testing Process
@@ -34,28 +34,22 @@ chmod +x start-nginx.sh
 
 This starts nginx listening on port 3618, proxying to localhost:3619.
 
-### Terminal 2: Start MCP Inspector
-```bash
-chmod +x start-mcp-inspector.sh
-./start-mcp-inspector.sh
-```
+### Terminal 2: Start Claude Code or MCP Client
+Start Claude Code or another long-running MCP client to use the HT-MCP binary to launch a session with a web server. We don't have a script for this in this repo at this time.
 
-This starts:
-- HT-MCP server with `--bind-address 0.0.0.0:3619`
-- MCP Inspector web interface
+Configure your MCP client to use the HT-MCP binary and create a session using the `ht_create_session` tool with:
+```json
+{
+  "enableWebServer": true
+}
+```
 
 ### Testing Steps
 
-1. **MCP Inspector opens** in your browser automatically
-2. **Connect to HT-MCP** - You should see the HT-MCP server connected
-3. **Create a session** using the `ht_create_session` tool with:
-   ```json
-   {
-     "enableWebServer": true
-   }
-   ```
-4. **Test the proxy** - Open http://localhost:3618 in your browser
-5. **Verify functionality** - You should see the terminal interface through nginx
+1. **Start your MCP client** (Claude Code, etc.) with HT-MCP configured
+2. **Create a session** using the `ht_create_session` tool with `enableWebServer: true`
+3. **Test the proxy** - Open http://localhost:3618 in your browser
+4. **Verify functionality** - You should see the terminal interface through nginx
 
 ## What This Tests
 
@@ -82,5 +76,4 @@ This starts:
 
 - `nginx-local.conf` - Nginx configuration for local testing
 - `start-nginx.sh` - Starts nginx proxy server
-- `start-mcp-inspector.sh` - Starts MCP Inspector with HT-MCP
 - `README.md` - This file

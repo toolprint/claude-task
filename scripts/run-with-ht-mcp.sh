@@ -3,7 +3,13 @@
 
 # Default values
 DEFAULT_PORT="3618"
-DEFAULT_PROMPT="Use the ht-mcp MCP server to create a terminal session with enableWebServer set to true, then perform these tasks with 3 seconds between each: 1) List files in current directory with 'ls -la', 2) List contents of src/ directory, 3) Create a test file called demo.txt with some content, 4) Create a summary.md file describing what you found in the workspace, 5) List files again to show the new files, 6) Display contents of the summary file you created, then wait 30 seconds to keep the web interface active"
+# Load default prompt from external file
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -f "$SCRIPT_DIR/default-ht-mcp-prompt.txt" ]; then
+    DEFAULT_PROMPT=$(cat "$SCRIPT_DIR/default-ht-mcp-prompt.txt")
+else
+    DEFAULT_PROMPT="Use the ht-mcp MCP server to create a terminal session with enableWebServer set to true, then list files and create a simple demo."
+fi
 DEBUG=""
 APPROVAL=""
 
@@ -19,7 +25,11 @@ if [[ "$1" == "-h" ]] || [[ "$1" == "--help" ]]; then
     echo ""
     echo "Arguments:"
     echo "  PORT    Port to expose HT-MCP web interface (default: $DEFAULT_PORT)"
-    echo "  PROMPT  Task prompt for Claude (default: '$DEFAULT_PROMPT')"
+    echo "  PROMPT  Task prompt for Claude (default: loaded from default-ht-mcp-prompt.txt)"
+    echo ""
+    echo "Default Prompt:"
+    echo "  The default prompt includes a comprehensive development workflow scenario"
+    echo "  that showcases various HT-MCP capabilities. See default-ht-mcp-prompt.txt"
     echo ""
     echo "Examples:"
     echo "  $0                                    # Use defaults (no approval)"
@@ -58,9 +68,9 @@ PORT="${1:-$DEFAULT_PORT}"
 PROMPT="${2:-$DEFAULT_PROMPT}"
 
 # Check if claude-task binary exists
-if [[ ! -f "./target/release/claude-task" ]]; then
-    echo "Error: claude-task binary not found at ./target/release/claude-task"
-    echo "Please run './test-ht-mcp.sh' first to build the project"
+if [[ ! -f "../target/release/claude-task" ]]; then
+    echo "Error: claude-task binary not found at ../target/release/claude-task"
+    echo "Please run 'just build-release' or './test-ht-mcp.sh' first to build the project"
     exit 1
 fi
 
@@ -90,4 +100,4 @@ if [[ -n "$DEBUG" ]]; then
     echo ""
 fi
 
-./target/release/claude-task run $DEBUG $APPROVAL --ht-mcp-port "$PORT" "$PROMPT"
+../target/release/claude-task run ${DEBUG} ${APPROVAL} --ht-mcp-port "$PORT" "$PROMPT"

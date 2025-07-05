@@ -66,8 +66,8 @@ RUN SNIPPET="export PROMPT_COMMAND='history -a' && export HISTFILE=/commandhisto
 ENV DEVCONTAINER=true
 
 # Copy the entrypoint script and nginx config (before switching to node user)
-COPY docker-entrypoint.sh /usr/local/bin/claude-entrypoint.sh
-COPY nginx.conf /etc/nginx/ht-mcp-proxy.conf
+COPY docker/entrypoint.sh /usr/local/bin/claude-entrypoint.sh
+COPY docker/nginx/ht-mcp-proxy.conf /etc/nginx/ht-mcp-proxy.conf
 RUN chmod +x /usr/local/bin/claude-entrypoint.sh
 
 # Create workspace and config directories and set permissions

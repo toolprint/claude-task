@@ -1,0 +1,37 @@
+Use the ht-mcp MCP server to create a terminal session with enableWebServer set to true, then execute the following development workflow scenario:
+
+**Project Analysis & Documentation Workflow:**
+
+1. **Environment Setup** (30 seconds):
+   - Create a session with enableWebServer: true
+   - Check current working directory and list all files/folders
+   - Display system information (OS, user, available disk space)
+
+2. **Codebase Analysis** (45 seconds):
+   - Explore the src/ directory structure and list all Rust files
+   - Read and summarize the main.rs file to understand the project's purpose
+   - Check Cargo.toml for dependencies and project metadata
+   - Look for any configuration files (.env, config files, etc.)
+
+3. **Code Quality Assessment** (30 seconds):
+   - Run 'cargo check' to validate the code compiles
+   - Run 'cargo clippy' to check for linting issues
+   - Count lines of code in the src/ directory
+   - Search for TODO or FIXME comments in the codebase
+
+4. **Documentation Generation** (45 seconds):
+   - Create a project_analysis.md file with your findings
+   - Include: project purpose, key files, dependencies, code quality status
+   - Create a file_inventory.txt listing all important files with brief descriptions
+   - Generate a quick_start_guide.md with basic usage instructions
+
+5. **Testing & Validation** (15 seconds):
+   - List the contents of both generated files
+   - Verify the files were created successfully
+   - Display a final summary of the analysis
+
+**Important**: 
+- Keep the session active for at least 3 minutes to allow web interface testing
+- Use 2-3 second delays between major steps for better observation
+- Provide clear commentary on what you're doing at each step
+- If any step fails, explain the issue and continue with the next step

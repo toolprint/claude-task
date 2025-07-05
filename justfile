@@ -260,6 +260,77 @@ build-ht-mcp version="latest":
 
 # Build Docker image using buildx
 [group('docker')]
-build-docker-image:
-    @docker buildx bake
+docker-bake:
+    @docker buildx bake -f docker/docker-bake.hcl
+
+# Test Docker setup
+[group('docker')]
+test-docker:
+    @echo "🐳 Testing Docker setup..."
+    cd scripts && ./test-docker.sh
+
+# HT-MCP Commands
+
+# Setup and test HT-MCP integration
+[group('ht-mcp')]
+test-ht-mcp:
+    @echo "🧪 Testing HT-MCP integration..."
+    cd scripts && ./test-ht-mcp.sh
+
+# Run claude-task with HT-MCP (with approval tool)
+[group('ht-mcp')]
+run-ht-mcp prompt="" port="3618" *args:
+    #!/usr/bin/env bash
+    echo "🚀 Running claude-task with HT-MCP..."
+    cd scripts
+    if [ -z "{{prompt}}" ]; then
+        ./run-with-ht-mcp.sh -a {{args}} {{port}}
+    else
+        ./run-with-ht-mcp.sh -a {{args}} {{port}} "{{prompt}}"
+    fi
+
+# Run claude-task with HT-MCP in debug mode
+[group('ht-mcp')]
+run-ht-mcp-debug prompt="" port="3618" *args:
+    #!/usr/bin/env bash
+    echo "🔍 Running claude-task with HT-MCP (debug mode)..."
+    cd scripts
+    if [ -z "{{prompt}}" ]; then
+        ./run-with-ht-mcp.sh -a -d {{args}} {{port}}
+    else
+        ./run-with-ht-mcp.sh -a -d {{args}} {{port}} "{{prompt}}"
+    fi
+
+# Start local nginx test environment
+[group('ht-mcp')]
+test-nginx-local:
+    #!/usr/bin/env bash
+    echo "🌐 Starting local nginx test environment..."
+    echo "Starting nginx proxy in background..."
+    cd examples/local-nginx-test
+    chmod +x start-nginx.sh
+    ./start-nginx.sh &
+    NGINX_PID=$!
+    cd - > /dev/null
+    echo "✅ Nginx proxy started (PID: $NGINX_PID)"
+    echo ""
+    echo "📋 Next steps:"
+    echo "  1. Nginx is now running, proxying localhost:3619 -> localhost:3618"
+    echo "  2. In another terminal, start Claude Code with HT-MCP configured"
+    echo "  3. Use ht_create_session with enableWebServer: true"
+    echo "  4. Open http://localhost:3618 to test the web interface"
+    echo ""
+    echo "⏹️  Press Ctrl+C to stop nginx and exit"
+    echo ""
+    
+    # Function to cleanup
+    cleanup() {
+        echo "Stopping nginx (PID: $NGINX_PID)..."
+        kill $NGINX_PID 2>/dev/null || true
+        exit
+    }
+    trap cleanup SIGTERM SIGINT
+    
+    # Wait for user to stop
+    wait $NGINX_PID
 

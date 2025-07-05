@@ -222,9 +222,7 @@ async fn create_docker_home_volume(base_dir: &str) -> Result<()> {
         return Err(anyhow::anyhow!("Docker volume create failed: {}", stderr));
     }
 
-    println!(
-        "✓ Docker volume 'claude-task-home' created with read-only bind mount to {base_dir}"
-    );
+    println!("✓ Docker volume 'claude-task-home' created with read-only bind mount to {base_dir}");
 
     Ok(())
 }

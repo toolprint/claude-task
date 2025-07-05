@@ -339,32 +339,33 @@ impl DockerManager {
         if let Some(ht_mcp_port) = config.ht_mcp_port {
             use bollard::models::PortBinding;
             use std::collections::HashMap;
-            
+
             let mut port_bindings = HashMap::new();
-            
-            // Expose direct HT-MCP port (container 3618 -> host 3618)
+
+            // Expose direct HT-MCP port (container 3618 -> host port)
             port_bindings.insert(
                 "3618/tcp".to_string(),
                 Some(vec![PortBinding {
                     host_ip: Some("0.0.0.0".to_string()),
-                    host_port: Some("3618".to_string()),
+                    host_port: Some(ht_mcp_port.to_string()),
                 }]),
             );
-            
-            // Expose nginx proxy port (container 4618 -> host 4618)
+
+            // Expose nginx proxy port (container 4618 -> host port+1000)
+            let proxy_port = ht_mcp_port + 1000;
             port_bindings.insert(
                 "4618/tcp".to_string(),
                 Some(vec![PortBinding {
                     host_ip: Some("0.0.0.0".to_string()),
-                    host_port: Some("4618".to_string()),
+                    host_port: Some(proxy_port.to_string()),
                 }]),
             );
-            
+
             host_config.port_bindings = Some(port_bindings);
-            
+
             println!("🌐 HT-MCP web interface will be available at:");
-            println!("   Direct HT-MCP:       http://localhost:3618");
-            println!("   Nginx Proxy:         http://localhost:4618 (recommended for WebSockets)");
+            println!("   Direct HT-MCP:       http://localhost:{ht_mcp_port}");
+            println!("   Nginx Proxy:         http://localhost:{proxy_port} (recommended for WebSockets)");
         }
 
         // Build the claude command
@@ -389,19 +390,33 @@ impl DockerManager {
             }
         }
 
-        claude_cmd.extend(vec![
-            "-p".to_string(),
-            format!("\"{}\"", prompt.replace("\"", "\\\"")),
-        ]);
+        claude_cmd.extend(vec!["-p".to_string(), prompt.to_string()]);
 
         // Call the entrypoint script manually since Docker exec bypasses ENTRYPOINT
         // Wrap in shell to ensure proper execution
-        let entrypoint_cmd = format!("/usr/local/bin/claude-entrypoint.sh {}", claude_cmd.join(" "));
-        let cmd = vec!["/bin/bash".to_string(), "-c".to_string(), entrypoint_cmd];
+        // Properly escape all arguments for shell
+        let escaped_args: Vec<String> = claude_cmd
+            .iter()
+            .map(|arg| {
+                if arg.contains(' ') || arg.contains('\'') || arg.contains('"') {
+                    // Use single quotes and escape any single quotes in the argument
+                    format!("'{}'", arg.replace("'", "'\\''"))
+                } else {
+                    arg.clone()
+                }
+            })
+            .collect();
+        
+        let entrypoint_cmd = format!(
+            "/usr/local/bin/claude-entrypoint.sh {}",
+            escaped_args.join(" ")
+        );
+        let cmd = vec!["/bin/bash".to_string(), "-c".to_string(), entrypoint_cmd.clone()];
 
         if debug {
             println!("🔍 Container command:");
-            println!("   Calling entrypoint manually: {}", cmd.join(" "));
+            println!("   Entrypoint command: {entrypoint_cmd}");
+            println!("   Full command: {}", cmd.join(" "));
         }
 
         let mut container_config = Config {
@@ -412,7 +427,7 @@ impl DockerManager {
             host_config: Some(host_config),
             ..Default::default()
         };
-        
+
         // Add exposed ports if HT-MCP is enabled
         if config.ht_mcp_port.is_some() {
             use std::collections::HashMap;

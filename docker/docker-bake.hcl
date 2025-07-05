@@ -4,7 +4,7 @@ group "default" {
 
 target "claude-task-linux" {
   context = "."
-  dockerfile = "Dockerfile"
+  dockerfile = "docker/Dockerfile"
   tags = [
     "claude-task:latest",
     "claude-task:${DOCKER_TAG}"

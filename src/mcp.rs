@@ -277,7 +277,7 @@ impl ClaudeTaskMcpServer {
             worktree_base_dir: &worktree_base_dir,
             task_base_home_dir: &task_base_home_dir,
             open_editor: false, // Don't auto-open IDE in MCP mode
-            ht_mcp_port: None, // HT-MCP port not supported via MCP interface
+            ht_mcp_port: None,  // HT-MCP port not supported via MCP interface
         };
 
         run_claude_task(config)

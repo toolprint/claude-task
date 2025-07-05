@@ -1,10 +1,4 @@
 {
-  "mcpServers": {
-    "ct": {
-      "type": "stdio",
-      "command": "./target/release/claude-task",
-      "args": ["mcp"],
-      "env": {}
+    "mcpServers": {
     }
   }
-}

@@ -249,9 +249,7 @@ fn list_git_worktrees(branch_prefix: &str) -> Result<()> {
     let current_dir = std::env::current_dir().context("Could not get current directory")?;
     let repo_root = find_git_repo_root(&current_dir)?;
 
-    println!(
-        "Listing git worktrees with branch prefix '{branch_prefix}'..."
-    );
+    println!("Listing git worktrees with branch prefix '{branch_prefix}'...");
     println!("Repository root: {repo_root:?}");
     println!();
 
@@ -322,9 +320,7 @@ fn list_git_worktrees(branch_prefix: &str) -> Result<()> {
 
     // Print all matching worktrees
     if matching_worktrees.is_empty() {
-        println!(
-            "No worktrees found matching branch prefix '{branch_prefix}'."
-        );
+        println!("No worktrees found matching branch prefix '{branch_prefix}'.");
     } else {
         for (path, head, branch) in matching_worktrees {
             print_worktree_info(&path, &head, &branch);
@@ -485,12 +481,8 @@ fn remove_git_worktree(task_id: &str, branch_prefix: &str) -> Result<()> {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        println!(
-            "⚠️  Warning: Failed to delete branch '{branch_name}': {stderr}"
-        );
-        println!(
-            "   You may need to delete it manually with: git branch -D {branch_name}"
-        );
+        println!("⚠️  Warning: Failed to delete branch '{branch_name}': {stderr}");
+        println!("   You may need to delete it manually with: git branch -D {branch_name}");
     } else {
         println!("✓ Branch deleted: {branch_name}");
     }
@@ -554,7 +546,7 @@ fn generate_short_id() -> String {
 
 fn open_ide_in_path(path: &str, ide: &str) -> Result<()> {
     println!("🚀 Opening {ide} in {path}...");
-    
+
     let output = Command::new(ide)
         .arg(path)
         .output()
@@ -611,13 +603,13 @@ fn select_worktree_interactively(branch_prefix: &str) -> Result<()> {
         } else {
             branch
         };
-        
+
         let path_buf = PathBuf::from(path);
         let dir_name = path_buf
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or("unknown");
-        
+
         let display_name = format!("{dir_name} ({clean_branch})");
         options.push(display_name);
     }
@@ -690,7 +682,7 @@ async fn run_claude_task(config: TaskRunConfig<'_>) -> Result<()> {
             println!("⚠️  WARNING: No approval tool permission specified!");
             println!("   This will run Claude with --dangerously-skip-permissions");
             println!("   Claude will have unrestricted access to execute commands without user approval.");
-            
+
             // Extra warning if HT-MCP is enabled
             if config.ht_mcp_port.is_some() {
                 println!();
@@ -700,7 +692,7 @@ async fn run_claude_task(config: TaskRunConfig<'_>) -> Result<()> {
                 println!("   making the web interface monitoring ineffective.");
                 println!("   Consider providing an approval tool permission instead.");
             }
-            
+
             println!();
             println!("   This is DANGEROUS and should only be used in trusted environments.");
             println!();
@@ -741,9 +733,7 @@ async fn run_claude_task(config: TaskRunConfig<'_>) -> Result<()> {
         }
 
         if config.debug {
-            println!(
-                "✓ Approval tool permission format validated: {permission_tool_arg}"
-            );
+            println!("✓ Approval tool permission format validated: {permission_tool_arg}");
         }
     }
 
@@ -781,10 +771,8 @@ async fn run_claude_task(config: TaskRunConfig<'_>) -> Result<()> {
             println!("🌿 Creating git worktree for task...");
             let (worktree_path, branch_name) =
                 create_git_worktree(&task_id, "claude-task/", config.worktree_base_dir)?;
-            println!(
-                "✓ Worktree created: {worktree_path:?} (branch: {branch_name})"
-            );
-            
+            println!("✓ Worktree created: {worktree_path:?} (branch: {branch_name})");
+
             // Open IDE if requested
             if config.open_editor {
                 if let Err(e) = open_ide_in_path(&worktree_path.to_string_lossy(), "cursor") {
@@ -792,7 +780,7 @@ async fn run_claude_task(config: TaskRunConfig<'_>) -> Result<()> {
                     println!("   Continuing with task execution...");
                 }
             }
-            
+
             worktree_path.to_string_lossy().to_string()
         }
     };
@@ -832,7 +820,7 @@ async fn run_claude_task(config: TaskRunConfig<'_>) -> Result<()> {
         println!("   - Workspace path: {}", claude_config.workspace_path);
         println!("   - Timezone: {}", claude_config.timezone);
         if let Some(port) = claude_config.ht_mcp_port {
-            println!("   - HT-MCP port: {}", port);
+            println!("   - HT-MCP port: {port}");
         }
     }
 
@@ -973,9 +961,7 @@ async fn clean_all_worktrees_and_volumes(
     let worktrees = get_matching_worktrees(branch_prefix)?;
 
     if worktrees.is_empty() {
-        println!(
-            "No worktrees found matching branch prefix '{branch_prefix}'."
-        );
+        println!("No worktrees found matching branch prefix '{branch_prefix}'.");
         return Ok(());
     }
 

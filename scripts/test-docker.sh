@@ -7,4 +7,4 @@ echo "Testing entrypoint script execution..."
 docker run --rm \
   -v claude-task-home:/home/base:ro \
   claude-task:dev \
-  /usr/local/bin/docker-entrypoint.sh echo "TEST COMMAND"
+  /usr/local/bin/claude-entrypoint.sh echo "TEST COMMAND"

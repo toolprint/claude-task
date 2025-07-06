@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "ht-mcp-build-release": {
+      "type": "stdio",
+      "command": "./modules/ht-mcp/release/latest/ht-mcp-macos-aarch64",
+      "args": ["--debug"],
+      "env": {}
+    },
+    "ct-build-release": {
+      "type": "stdio",
+      "command": "./target/release/claude-task",
+      "args": ["mcp"],
+      "env": {}
+    }
+  }
+}

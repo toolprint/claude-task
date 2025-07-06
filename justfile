@@ -233,6 +233,76 @@ check-fmt:
     @echo "🔍 Checking Rust formatting..."
     cargo fmt --check
 
+# Pre-commit validation - runs all checks required before committing
+[group('format')]
+pre-commit:
+    #!/usr/bin/env bash
+    echo "🔄 Running pre-commit validation..."
+    echo "=================================="
+    echo ""
+    
+    # Track success for checks and linters
+    checks_success=true
+    
+    # 1. Static check (cargo check)
+    echo "1️⃣  Static code check..."
+    if cargo check; then
+        echo "   ✅ Static check passed"
+    else
+        echo "   ❌ Static check failed"
+        checks_success=false
+    fi
+    echo ""
+    
+    # 2. Code formatting check
+    echo "2️⃣  Code formatting check..."
+    if cargo fmt --check; then
+        echo "   ✅ Code formatting is correct"
+    else
+        echo "   ❌ Code formatting issues found"
+        echo "   💡 Run 'just fmt' to fix formatting"
+        checks_success=false
+    fi
+    echo ""
+    
+    # 3. Clippy linter
+    echo "3️⃣  Clippy linter check..."
+    if cargo clippy -- -D warnings; then
+        echo "   ✅ Clippy linter passed"
+    else
+        echo "   ❌ Clippy linter found issues"
+        checks_success=false
+    fi
+    echo ""
+    
+    # Check if we should proceed to tests
+    if [ "$checks_success" = false ]; then
+        echo "=================================="
+        echo "❌ FAILURE: Code checks and linters failed"
+        echo "🔧 Please fix the above issues before running tests"
+        echo "💡 Once fixed, run 'just pre-commit' again to include tests"
+        exit 1
+    fi
+    
+    # 4. Tests (only run if all checks passed)
+    echo "4️⃣  Running tests..."
+    if cargo test; then
+        echo "   ✅ All tests passed"
+    else
+        echo "   ❌ Some tests failed"
+        echo ""
+        echo "=================================="
+        echo "❌ FAILURE: Tests failed"
+        echo "🔧 Please fix the failing tests before committing"
+        exit 1
+    fi
+    echo ""
+    
+    # Final success message
+    echo "=================================="
+    echo "🎉 SUCCESS: All pre-commit checks passed!"
+    echo "✅ Code is ready for commit"
+
 # Task Management Commands
 
 # Run a Claude task Example: `just task "Analyze the codebase" --debug`
@@ -241,10 +311,96 @@ task prompt *args: build
     @echo "🤖 Running Claude task: {{prompt}}"
     cargo run -- run "{{prompt}}" {{args}}
 
+# Git Submodule Commands
+
+# Recursively sync git submodules to their specified branches
+[group('git')]
+sync-modules:
+    @echo "🔄 Syncing git submodules..."
+    git submodule update --init --recursive --remote
+
+# Build ht-mcp submodule release
+[group('git')]
+build-ht-mcp version="latest":
+    @echo "🔨 Building ht-mcp submodule (version: {{version}})..."
+    @if [ ! -d "modules/ht-mcp" ]; then echo "❌ ht-mcp submodule not found. Run 'just sync-modules' first."; exit 1; fi
+    cd modules/ht-mcp && chmod +x build-release.sh && ./build-release.sh {{version}}
+
 # Docker Commands
 
 # Build Docker image using buildx
 [group('docker')]
-build-docker-image:
-    @docker buildx bake
+docker-bake:
+    @docker buildx bake -f docker/docker-bake.hcl
+
+# Test Docker setup
+[group('docker')]
+test-docker:
+    @echo "🐳 Testing Docker setup..."
+    cd scripts && ./test-docker.sh
+
+# HT-MCP Commands
+
+# Setup and test HT-MCP integration
+[group('ht-mcp')]
+test-ht-mcp:
+    @echo "🧪 Testing HT-MCP integration..."
+    cd scripts && ./test-ht-mcp.sh
+
+# Run claude-task with HT-MCP (with approval tool)
+[group('ht-mcp')]
+run-ht-mcp prompt="" port="3618" *args:
+    #!/usr/bin/env bash
+    echo "🚀 Running claude-task with HT-MCP..."
+    cd scripts
+    if [ -z "{{prompt}}" ]; then
+        ./run-with-ht-mcp.sh -a {{args}} {{port}}
+    else
+        ./run-with-ht-mcp.sh -a {{args}} {{port}} "{{prompt}}"
+    fi
+
+# Run claude-task with HT-MCP in debug mode
+[group('ht-mcp')]
+run-ht-mcp-debug prompt="" port="3618" *args:
+    #!/usr/bin/env bash
+    echo "🔍 Running claude-task with HT-MCP (debug mode)..."
+    cd scripts
+    if [ -z "{{prompt}}" ]; then
+        ./run-with-ht-mcp.sh -a -d {{args}} {{port}}
+    else
+        ./run-with-ht-mcp.sh -a -d {{args}} {{port}} "{{prompt}}"
+    fi
+
+# Start local nginx test environment
+[group('ht-mcp')]
+test-nginx-local:
+    #!/usr/bin/env bash
+    echo "🌐 Starting local nginx test environment..."
+    echo "Starting nginx proxy in background..."
+    cd examples/local-nginx-test
+    chmod +x start-nginx.sh
+    ./start-nginx.sh &
+    NGINX_PID=$!
+    cd - > /dev/null
+    echo "✅ Nginx proxy started (PID: $NGINX_PID)"
+    echo ""
+    echo "📋 Next steps:"
+    echo "  1. Nginx is now running, proxying localhost:3619 -> localhost:3618"
+    echo "  2. In another terminal, start Claude Code with HT-MCP configured"
+    echo "  3. Use ht_create_session with enableWebServer: true"
+    echo "  4. Open http://localhost:3618 to test the web interface"
+    echo ""
+    echo "⏹️  Press Ctrl+C to stop nginx and exit"
+    echo ""
+    
+    # Function to cleanup
+    cleanup() {
+        echo "Stopping nginx (PID: $NGINX_PID)..."
+        kill $NGINX_PID 2>/dev/null || true
+        exit
+    }
+    trap cleanup SIGTERM SIGINT
+    
+    # Wait for user to stop
+    wait $NGINX_PID
 

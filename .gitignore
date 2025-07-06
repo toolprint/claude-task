@@ -22,3 +22,11 @@ target/
 
 # Local execution files
 output/
+
+# Temporary files and logs
+examples/local-nginx-test/nginx-error.log
+examples/local-nginx-test/nginx-access.log
+examples/local-nginx-test/tmp/
+
+# Docker build context
+docker/target/

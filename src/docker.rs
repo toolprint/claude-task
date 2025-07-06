@@ -24,6 +24,8 @@ pub struct ClaudeTaskConfig {
     pub timezone: String,
     pub dockerfile_path: String,
     pub context_path: String,
+    pub ht_mcp_port: Option<u16>,
+    pub web_view_proxy_port: u16,
 }
 
 impl Default for ClaudeTaskConfig {
@@ -37,6 +39,8 @@ impl Default for ClaudeTaskConfig {
             timezone: "America/New_York".to_string(),
             dockerfile_path: "Dockerfile".to_string(),
             context_path: "claude-task".to_string(),
+            ht_mcp_port: None,
+            web_view_proxy_port: 4618,
         }
     }
 }
@@ -316,14 +320,19 @@ impl DockerManager {
         }
 
         // Environment variables
-        let env_vars = vec![
+        let mut env_vars = vec![
             format!("TASK_ID={}", config.task_id),
             "NODE_OPTIONS=--max-old-space-size=4096".to_string(),
             "CLAUDE_CONFIG_DIR=/home/node/.claude".to_string(),
             "POWERLEVEL9K_DISABLE_GITSTATUS=true".to_string(),
         ];
 
-        let host_config = HostConfig {
+        // Add CCO MCP URL if HT-MCP is enabled
+        if config.ht_mcp_port.is_some() {
+            env_vars.push("CCO_MCP_URL=http://host.docker.internal:8660/mcp".to_string());
+        }
+
+        let mut host_config = HostConfig {
             mounts: Some(mounts),
             restart_policy: Some(RestartPolicy {
                 name: Some(RestartPolicyNameEnum::NO),
@@ -332,6 +341,31 @@ impl DockerManager {
             auto_remove: Some(true),
             ..Default::default()
         };
+
+        // Add port mapping for web view proxy if specified
+        if config.web_view_proxy_port > 0 {
+            use bollard::models::PortBinding;
+            use std::collections::HashMap;
+
+            let mut port_bindings = HashMap::new();
+
+            // Only expose nginx proxy port (container 4618 -> host configured port)
+            port_bindings.insert(
+                "4618/tcp".to_string(),
+                Some(vec![PortBinding {
+                    host_ip: Some("0.0.0.0".to_string()),
+                    host_port: Some(config.web_view_proxy_port.to_string()),
+                }]),
+            );
+
+            host_config.port_bindings = Some(port_bindings);
+
+            println!("🌐 Web interface will be available at:");
+            println!(
+                "   Web Proxy: http://localhost:{} (NGINX proxy with fallback page)",
+                config.web_view_proxy_port
+            );
+        }
 
         // Build the claude command
         let mut claude_cmd = vec!["claude".to_string()];
@@ -355,27 +389,18 @@ impl DockerManager {
             }
         }
 
-        claude_cmd.extend(vec![
-            "-p".to_string(),
-            format!("\"{}\"", prompt.replace("\"", "\\\"")),
-        ]);
+        claude_cmd.extend(vec!["-p".to_string(), prompt.to_string()]);
 
-        // Create shell command that first copies base directory contents to /home/node, then runs claude
-        let claude_cmd_str = claude_cmd.join(" ");
-        let full_cmd = format!(
-            "cp -r /home/base/. /home/node/ 2>/dev/null || true && {claude_cmd_str}"
-        );
+        // The entrypoint script will run automatically, we just need to pass the claude command
+        let cmd = claude_cmd;
 
         if debug {
             println!("🔍 Container command:");
-            println!("   Shell: sh -c");
-            println!("   Full command: {full_cmd}");
-            println!("   Claude command: {claude_cmd_str}");
+            println!("   Claude command: {}", cmd.join(" "));
+            println!("   (Entrypoint script will run automatically)");
         }
 
-        let cmd = vec!["sh".to_string(), "-c".to_string(), full_cmd];
-
-        let config = Config {
+        let mut container_config = Config {
             image: Some("claude-task:dev".to_string()),
             cmd: Some(cmd),
             env: Some(env_vars),
@@ -384,7 +409,15 @@ impl DockerManager {
             ..Default::default()
         };
 
-        Ok(config)
+        // Add exposed ports if web view proxy is enabled
+        if config.web_view_proxy_port > 0 {
+            use std::collections::HashMap;
+            let mut exposed_ports = HashMap::new();
+            exposed_ports.insert("4618/tcp".to_string(), HashMap::new()); // nginx proxy only
+            container_config.exposed_ports = Some(exposed_ports);
+        }
+
+        Ok(container_config)
     }
 
     async fn stream_container_logs(&self, container_id: &str) -> Result<()> {

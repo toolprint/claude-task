@@ -30,6 +30,8 @@ struct TaskRunConfig<'a> {
     worktree_base_dir: &'a str,
     task_base_home_dir: &'a str,
     open_editor: bool,
+    ht_mcp_port: Option<u16>,
+    web_view_proxy_port: u16,
 }
 
 use credentials::setup_credentials_and_config;
@@ -141,6 +143,12 @@ enum Commands {
         /// Open IDE in worktree after task creation
         #[arg(short = 'e', long)]
         open_editor: bool,
+        /// Port to expose for HT-MCP web interface (e.g., 8080)
+        #[arg(long)]
+        ht_mcp_port: Option<u16>,
+        /// Port to expose for web view proxy to see terminal commands the task runs (default: 4618)
+        #[arg(long, default_value = "4618")]
+        web_view_proxy_port: u16,
     },
     /// Clean up all claude-task git worktrees and docker volumes
     #[command(visible_alias = "c")]
@@ -245,9 +253,7 @@ fn list_git_worktrees(branch_prefix: &str) -> Result<()> {
     let current_dir = std::env::current_dir().context("Could not get current directory")?;
     let repo_root = find_git_repo_root(&current_dir)?;
 
-    println!(
-        "Listing git worktrees with branch prefix '{branch_prefix}'..."
-    );
+    println!("Listing git worktrees with branch prefix '{branch_prefix}'...");
     println!("Repository root: {repo_root:?}");
     println!();
 
@@ -318,9 +324,7 @@ fn list_git_worktrees(branch_prefix: &str) -> Result<()> {
 
     // Print all matching worktrees
     if matching_worktrees.is_empty() {
-        println!(
-            "No worktrees found matching branch prefix '{branch_prefix}'."
-        );
+        println!("No worktrees found matching branch prefix '{branch_prefix}'.");
     } else {
         for (path, head, branch) in matching_worktrees {
             print_worktree_info(&path, &head, &branch);
@@ -481,12 +485,8 @@ fn remove_git_worktree(task_id: &str, branch_prefix: &str) -> Result<()> {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        println!(
-            "⚠️  Warning: Failed to delete branch '{branch_name}': {stderr}"
-        );
-        println!(
-            "   You may need to delete it manually with: git branch -D {branch_name}"
-        );
+        println!("⚠️  Warning: Failed to delete branch '{branch_name}': {stderr}");
+        println!("   You may need to delete it manually with: git branch -D {branch_name}");
     } else {
         println!("✓ Branch deleted: {branch_name}");
     }
@@ -550,7 +550,7 @@ fn generate_short_id() -> String {
 
 fn open_ide_in_path(path: &str, ide: &str) -> Result<()> {
     println!("🚀 Opening {ide} in {path}...");
-    
+
     let output = Command::new(ide)
         .arg(path)
         .output()
@@ -607,13 +607,13 @@ fn select_worktree_interactively(branch_prefix: &str) -> Result<()> {
         } else {
             branch
         };
-        
+
         let path_buf = PathBuf::from(path);
         let dir_name = path_buf
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or("unknown");
-        
+
         let display_name = format!("{dir_name} ({clean_branch})");
         options.push(display_name);
     }
@@ -686,6 +686,18 @@ async fn run_claude_task(config: TaskRunConfig<'_>) -> Result<()> {
             println!("⚠️  WARNING: No approval tool permission specified!");
             println!("   This will run Claude with --dangerously-skip-permissions");
             println!("   Claude will have unrestricted access to execute commands without user approval.");
+
+            // Extra warning if HT-MCP is enabled
+            if config.ht_mcp_port.is_some() {
+                println!();
+                println!("🚨 ADDITIONAL WARNING: HT-MCP mode is enabled!");
+                println!("   Skipping permissions defeats the purpose of HT-MCP integration.");
+                println!("   Claude will be able to use built-in tools instead of HT-MCP,");
+                println!("   making the web interface monitoring ineffective.");
+                println!("   Consider providing an approval tool permission instead.");
+            }
+
+            println!();
             println!("   This is DANGEROUS and should only be used in trusted environments.");
             println!();
 
@@ -725,9 +737,7 @@ async fn run_claude_task(config: TaskRunConfig<'_>) -> Result<()> {
         }
 
         if config.debug {
-            println!(
-                "✓ Approval tool permission format validated: {permission_tool_arg}"
-            );
+            println!("✓ Approval tool permission format validated: {permission_tool_arg}");
         }
     }
 
@@ -765,10 +775,8 @@ async fn run_claude_task(config: TaskRunConfig<'_>) -> Result<()> {
             println!("🌿 Creating git worktree for task...");
             let (worktree_path, branch_name) =
                 create_git_worktree(&task_id, "claude-task/", config.worktree_base_dir)?;
-            println!(
-                "✓ Worktree created: {worktree_path:?} (branch: {branch_name})"
-            );
-            
+            println!("✓ Worktree created: {worktree_path:?} (branch: {branch_name})");
+
             // Open IDE if requested
             if config.open_editor {
                 if let Err(e) = open_ide_in_path(&worktree_path.to_string_lossy(), "cursor") {
@@ -776,7 +784,7 @@ async fn run_claude_task(config: TaskRunConfig<'_>) -> Result<()> {
                     println!("   Continuing with task execution...");
                 }
             }
-            
+
             worktree_path.to_string_lossy().to_string()
         }
     };
@@ -806,6 +814,8 @@ async fn run_claude_task(config: TaskRunConfig<'_>) -> Result<()> {
     let mut claude_config = ClaudeTaskConfig {
         task_id: task_id.clone(),
         workspace_path: workspace_path.clone(),
+        ht_mcp_port: config.ht_mcp_port,
+        web_view_proxy_port: config.web_view_proxy_port,
         ..ClaudeTaskConfig::default()
     };
 
@@ -814,6 +824,14 @@ async fn run_claude_task(config: TaskRunConfig<'_>) -> Result<()> {
         println!("   - Task ID: {}", claude_config.task_id);
         println!("   - Workspace path: {}", claude_config.workspace_path);
         println!("   - Timezone: {}", claude_config.timezone);
+        if let Some(port) = claude_config.ht_mcp_port {
+            println!("   - HT-MCP port: {port}");
+            println!("   - NGINX proxy (container): 0.0.0.0:4618 -> 127.0.0.1:3618");
+        }
+        println!(
+            "   - Web view proxy port (host): {}",
+            claude_config.web_view_proxy_port
+        );
     }
 
     // Create volumes (npm and node cache)
@@ -953,9 +971,7 @@ async fn clean_all_worktrees_and_volumes(
     let worktrees = get_matching_worktrees(branch_prefix)?;
 
     if worktrees.is_empty() {
-        println!(
-            "No worktrees found matching branch prefix '{branch_prefix}'."
-        );
+        println!("No worktrees found matching branch prefix '{branch_prefix}'.");
         return Ok(());
     }
 
@@ -1196,6 +1212,8 @@ async fn main() -> Result<()> {
             mcp_config,
             yes,
             open_editor,
+            ht_mcp_port,
+            web_view_proxy_port,
         }) => {
             let debug_mode = cli.debug; // Use global debug flag
             let config = TaskRunConfig {
@@ -1210,6 +1228,8 @@ async fn main() -> Result<()> {
                 worktree_base_dir: &cli.worktree_base_dir,
                 task_base_home_dir: &cli.task_base_home_dir,
                 open_editor,
+                ht_mcp_port,
+                web_view_proxy_port,
             };
             run_claude_task(config).await?;
         }

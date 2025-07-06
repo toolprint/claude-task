@@ -32,6 +32,13 @@ Claude Task is a Rust-based CLI utility that streamlines the creation of isolate
 - Automatic cleanup and resource management
 - MCP configuration support for enhanced Claude Code integration
 
+### HT-MCP Integration
+- Web-based terminal interface for monitoring Claude's command executions
+- Real-time terminal session viewing via web browser
+- NGINX proxy with WebSocket support for reliable connections
+- Secure terminal access with session management
+- Transparent command execution tracking
+
 ### MCP Server Integration
 - Provides a full MCP (Model Context Protocol) server implementation
 - Exposes all CLI functionality as MCP tools for Claude Code
@@ -57,6 +64,11 @@ cd claude-task
 # Build the project
 just build
 
+# Build with HT-MCP support
+just sync-modules              # Initialize HT-MCP submodule
+just build-ht-mcp              # Build HT-MCP binaries
+just docker-bake               # Build Docker image with HT-MCP
+
 # Install locally (creates symlink 'ct' for convenience)
 just install
 ```
@@ -69,22 +81,31 @@ just install
 claude-task --help
 
 # Setup credentials and environment
-claude-task setup
+claude-task setup  # or: claude-task s
 
 # Git worktree management
-claude-task worktree <command>
+claude-task worktree <command>  # or: claude-task wt <command>
 
 # Docker volume management  
-claude-task volume <command>
+claude-task docker <command>  # or: claude-task d <command>
 
 # Run Claude tasks
-claude-task run <prompt>
+claude-task run <prompt>  # or: claude-task r <prompt>
+
+# Run with HT-MCP web terminal (recommended)
+just run-ht-mcp                    # Use default comprehensive prompt
+just run-ht-mcp-debug              # Same with debug output
+just run-ht-mcp port=8080          # Custom port
+just run-ht-mcp prompt="Custom task" port=3618  # Custom prompt and port
 
 # Clean up resources
-claude-task clean
+claude-task clean  # or: claude-task c
 
 # Start MCP server (for Claude Code integration)
 claude-task mcp
+
+# Show version information
+claude-task version  # or: claude-task v
 ```
 
 ### MCP Server Usage
@@ -104,9 +125,9 @@ The MCP server exposes the following tools for use within Claude Code:
 - `create_worktree` - Create a git worktree for a task
 - `list_worktree` - List current git worktrees  
 - `remove_worktree` - Remove and clean up a worktree
-- `init_volume` - Initialize Docker volumes
-- `list_volume` - List Docker volumes
-- `clean_volume` - Clean Docker volumes
+- `init_docker_volume` - Initialize Docker volumes
+- `list_docker_volume` - List Docker volumes
+- `clean_docker_volume` - Clean Docker volumes
 - `run_task` - Run a Claude task in a Docker container
 - `clean` - Clean up all worktrees and volumes
 
@@ -138,7 +159,19 @@ Example MCP configuration file:
    claude-task setup
    ```
 
-2. **Run a Task**
+2. **Docker Volume Management** (Optional - automatically handled by `run`)
+   ```bash
+   # Initialize Docker volumes
+   claude-task docker init  # or: claude-task d i
+   
+   # List Docker volumes
+   claude-task docker list  # or: claude-task d l
+   
+   # Clean Docker volumes
+   claude-task docker clean  # or: claude-task d c
+   ```
+
+3. **Run a Task**
    ```bash
    # Run Claude with a prompt (creates worktree automatically)
    claude-task run "Analyze this codebase and suggest improvements"
@@ -147,27 +180,37 @@ Example MCP configuration file:
    claude-task run "Review the API design" --task-id my-review
    
    # Use current directory instead of creating worktree
-   claude-task run "Quick code review" --use-current-dir
+   claude-task run "Quick code review" --workspace-dir
    
    # Run with MCP configuration and approval tool permission
    claude-task run "Implement new feature" \
      --mcp-config ./mcp-servers.json \
      --approval-tool-permission "mcp__approval_server__approve_command"
+   
+   # Run with HT-MCP web terminal interface (recommended)
+   just run-ht-mcp  # Uses default comprehensive development workflow
+   
+   # Access the web interface during execution:
+   # Direct HT-MCP: http://localhost:3618
+   # Via NGINX proxy: http://localhost:4618 (recommended)
    ```
 
-3. **Manual Worktree Management**
+4. **Manual Worktree Management**
    ```bash
    # Create a worktree manually
-   claude-task worktree create my-feature
+   claude-task worktree create my-feature  # or: claude-task wt c my-feature
    
    # List existing worktrees
-   claude-task worktree list
+   claude-task worktree list  # or: claude-task wt l
    
    # Remove a worktree
-   claude-task worktree remove my-feature
+   claude-task worktree remove my-feature  # or: claude-task wt rm my-feature
+   
+   # Open a worktree in your IDE
+   claude-task worktree open  # or: claude-task wt o
    ```
 
-4. **Cleanup**
+5. **Cleanup**
    ```bash
    # Clean up all resources (worktrees and volumes)
    claude-task clean
@@ -211,14 +254,30 @@ just task "Your prompt here"
 ```
 
 ### Project Structure
-- `src/main.rs` - Main CLI entry point
-- `src/credentials.rs` - macOS keychain credential extraction
-- `src/docker.rs` - Docker volume and container management
-- `src/mcp.rs` - MCP (Model Context Protocol) server implementation
-- `src/permission.rs` - Approval tool permission validation
-- `tests/` - Integration tests including MCP functionality
-- `Dockerfile` - Container image definition
-- `justfile` - Development commands
+```
+claude-task/
+├── src/                            # Rust source code
+│   ├── main.rs                     # Main CLI entry point
+│   ├── credentials.rs              # macOS keychain credential extraction
+│   ├── docker.rs                   # Docker volume and container management
+│   ├── mcp.rs                      # MCP (Model Context Protocol) server implementation
+│   └── permission.rs               # Approval tool permission validation
+├── docker/                         # Docker configuration
+│   ├── Dockerfile                  # Multi-stage container build
+│   ├── docker-bake.hcl             # Docker buildx configuration
+│   ├── entrypoint.sh               # Container initialization with HT-MCP
+│   └── nginx/
+│       └── ht-mcp-proxy.conf       # NGINX WebSocket proxy for HT-MCP
+├── scripts/                        # Execution scripts
+│   ├── run-with-ht-mcp.sh          # Main HT-MCP runner script
+│   ├── test-ht-mcp.sh              # Setup and build script
+│   ├── test-docker.sh              # Docker testing
+│   └── default-ht-mcp-prompt.txt   # Default comprehensive test prompt
+├── examples/                       # Examples and testing
+│   └── local-nginx-test/           # Local NGINX testing setup
+├── tests/                          # Integration tests
+├── modules/ht-mcp/                 # HT-MCP submodule
+└── justfile                        # Development commands
 
 ## Configuration
 
@@ -251,8 +310,86 @@ When running the MCP server (`claude-task mcp`), the following apply:
 - **Invalid approval tool permission**: Use format `mcp__<server_name>__<tool_name>`
 - **MCP config file not found**: Verify the path and file exists
 
+### HT-MCP Specific Issues
+- **HT-MCP binary not found**: Ensure the HT-MCP submodule is properly initialized
+- **NGINX proxy fails to start**: Verify port 4618 is available, check for port conflicts
+- **Web interface not accessible**: Ensure `enableWebServer: true` was used when creating sessions
+- **Port conflicts**: Check if ports 3618/4618 are already in use
+- **WebSocket connection errors**: Use the NGINX proxy on port 4618 for better reliability
+
 ### Debug Mode
 Use `--debug` flag for verbose output:
 ```bash
 claude-task --debug run "Debug this issue"
+
+# Debug HT-MCP integration
+just run-ht-mcp-debug  # Includes detailed logging for HT-MCP operations
 ```
+
+## HT-MCP Integration Details
+
+### Architecture
+
+HT-MCP (Headless Terminal MCP Server) provides a web-based terminal interface for transparent command execution monitoring:
+
+1. **HT-MCP Server**: Provides MCP tools for terminal session management and web interface
+2. **NGINX Proxy**: Handles WebSocket connections and CORS for the web interface
+3. **CCO Approval Tool**: Ensures Claude uses HT-MCP instead of built-in tools
+4. **Claude Task Container**: Sandboxed environment with all components integrated
+
+### HT-MCP Tools
+
+When HT-MCP is enabled, Claude has access to these terminal management tools:
+
+#### Session Management
+- `ht_create_session`: Create new terminal session (always use `enableWebServer: true`)
+- `ht_close_session`: Close terminal session
+- `ht_list_sessions`: List active sessions
+
+#### Terminal Interaction
+- `ht_execute_command`: Execute command and return output
+- `ht_send_keys`: Send keystrokes to terminal
+- `ht_take_snapshot`: Capture terminal state
+
+### Local Testing
+
+Test the NGINX proxy configuration locally:
+
+```bash
+# Start local test environment
+just test-nginx-local
+
+# Or manually:
+cd examples/local-nginx-test
+./start-nginx.sh  # Terminal 1
+# Start Claude Code with HT-MCP in Terminal 2
+```
+
+### Security Features
+
+- **Permission Validation**: CCO approval tool validates all tool requests
+- **Restricted Built-in Tools**: When HT-MCP is enabled, Claude's built-in tools are restricted
+- **Session Isolation**: Each task runs in its own containerized environment
+- **Transparent Monitoring**: All terminal operations are visible via web interface
+
+## Contributing
+
+When contributing to this project:
+
+1. Follow the existing project structure
+2. Update documentation for any new features
+3. Test both local and Docker environments
+4. Ensure backward compatibility with existing scripts
+
+For HT-MCP integration contributions:
+- Test the web interface thoroughly
+- Verify NGINX proxy configuration
+- Ensure WebSocket connections work reliably
+- Update integration tests as needed
+
+## References
+
+- [HT-MCP Repository](https://github.com/cripplet/ht-mcp) - Headless Terminal MCP Server
+- [Model Context Protocol](https://modelcontextprotocol.io/) - MCP Specification
+- [Claude Code Documentation](https://docs.anthropic.com/claude-code) - Official Claude Code docs
+- [Just](https://just.systems/) - Command runner used by this project

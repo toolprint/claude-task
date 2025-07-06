@@ -10,6 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 // Include the generated MCP help text
 include!(concat!(env!("OUT_DIR"), "/mcp_help.rs"));
 
+mod assets;
 mod credentials;
 mod docker;
 mod mcp;

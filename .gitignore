@@ -30,3 +30,4 @@ examples/local-nginx-test/tmp/
 
 # Docker build context
 docker/target/
+docker/ht-mcp-release/

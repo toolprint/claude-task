@@ -1,4 +1,4 @@
 [submodule "modules/ht-mcp"]
 	path = modules/ht-mcp
-	url = git@github.com:OneGrep/ht-mcp.git
+	url = https://github.com/OneGrep/ht-mcp.git
 	branch = briancripe/http-transport

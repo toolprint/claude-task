@@ -361,7 +361,10 @@ impl DockerManager {
             host_config.port_bindings = Some(port_bindings);
 
             println!("🌐 Web interface will be available at:");
-            println!("   Web Proxy: http://localhost:{} (NGINX proxy with fallback page)", config.web_view_proxy_port);
+            println!(
+                "   Web Proxy: http://localhost:{} (NGINX proxy with fallback page)",
+                config.web_view_proxy_port
+            );
         }
 
         // Build the claude command

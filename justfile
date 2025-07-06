@@ -233,6 +233,76 @@ check-fmt:
     @echo "🔍 Checking Rust formatting..."
     cargo fmt --check
 
+# Pre-commit validation - runs all checks required before committing
+[group('format')]
+pre-commit:
+    #!/usr/bin/env bash
+    echo "🔄 Running pre-commit validation..."
+    echo "=================================="
+    echo ""
+    
+    # Track success for checks and linters
+    checks_success=true
+    
+    # 1. Static check (cargo check)
+    echo "1️⃣  Static code check..."
+    if cargo check; then
+        echo "   ✅ Static check passed"
+    else
+        echo "   ❌ Static check failed"
+        checks_success=false
+    fi
+    echo ""
+    
+    # 2. Code formatting check
+    echo "2️⃣  Code formatting check..."
+    if cargo fmt --check; then
+        echo "   ✅ Code formatting is correct"
+    else
+        echo "   ❌ Code formatting issues found"
+        echo "   💡 Run 'just fmt' to fix formatting"
+        checks_success=false
+    fi
+    echo ""
+    
+    # 3. Clippy linter
+    echo "3️⃣  Clippy linter check..."
+    if cargo clippy -- -D warnings; then
+        echo "   ✅ Clippy linter passed"
+    else
+        echo "   ❌ Clippy linter found issues"
+        checks_success=false
+    fi
+    echo ""
+    
+    # Check if we should proceed to tests
+    if [ "$checks_success" = false ]; then
+        echo "=================================="
+        echo "❌ FAILURE: Code checks and linters failed"
+        echo "🔧 Please fix the above issues before running tests"
+        echo "💡 Once fixed, run 'just pre-commit' again to include tests"
+        exit 1
+    fi
+    
+    # 4. Tests (only run if all checks passed)
+    echo "4️⃣  Running tests..."
+    if cargo test; then
+        echo "   ✅ All tests passed"
+    else
+        echo "   ❌ Some tests failed"
+        echo ""
+        echo "=================================="
+        echo "❌ FAILURE: Tests failed"
+        echo "🔧 Please fix the failing tests before committing"
+        exit 1
+    fi
+    echo ""
+    
+    # Final success message
+    echo "=================================="
+    echo "🎉 SUCCESS: All pre-commit checks passed!"
+    echo "✅ Code is ready for commit"
+
 # Task Management Commands
 
 # Run a Claude task Example: `just task "Analyze the codebase" --debug`

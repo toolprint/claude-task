@@ -828,7 +828,10 @@ async fn run_claude_task(config: TaskRunConfig<'_>) -> Result<()> {
             println!("   - HT-MCP port: {port}");
             println!("   - NGINX proxy (container): 0.0.0.0:4618 -> 127.0.0.1:3618");
         }
-        println!("   - Web view proxy port (host): {}", claude_config.web_view_proxy_port);
+        println!(
+            "   - Web view proxy port (host): {}",
+            claude_config.web_view_proxy_port
+        );
     }
 
     // Create volumes (npm and node cache)

@@ -8,7 +8,7 @@ ENV TZ="$TZ"
 # AMD64 stage
 FROM build-linux-amd64 AS base-amd64
 ARG TARGETARCH=amd64
-COPY modules/ht-mcp/release/latest/ht-mcp-linux-x86_64 /usr/local/bin/ht-mcp
+COPY docker/ht-mcp-release/latest/ht-mcp-linux-x86_64 /usr/local/bin/ht-mcp
 RUN chmod +x /usr/local/bin/ht-mcp && \
     file /usr/local/bin/ht-mcp && \
     ldd /usr/local/bin/ht-mcp || echo "Binary is statically linked or incompatible"
@@ -16,7 +16,7 @@ RUN chmod +x /usr/local/bin/ht-mcp && \
 # ARM64 stage  
 FROM build-linux-arm64 AS base-arm64
 ARG TARGETARCH=arm64
-COPY modules/ht-mcp/release/latest/ht-mcp-linux-aarch64 /usr/local/bin/ht-mcp
+COPY docker/ht-mcp-release/latest/ht-mcp-linux-aarch64 /usr/local/bin/ht-mcp
 RUN chmod +x /usr/local/bin/ht-mcp && \
     file /usr/local/bin/ht-mcp && \
     ldd /usr/local/bin/ht-mcp || echo "Binary is statically linked or incompatible"
@@ -75,9 +75,6 @@ RUN mkdir -p /workspace /home/node/.claude && \
   chown -R node:node /workspace /home/node/.claude
 
 WORKDIR /workspace
-
-# Copy the CLAUDE.local.md file to the workspace
-COPY docker/CLAUDE.local.md CLAUDE.local.md
 
 # Switch to non-root user for npm global packages
 USER node

@@ -100,4 +100,4 @@ if [[ -n "$DEBUG" ]]; then
     echo ""
 fi
 
-../target/release/claude-task run ${DEBUG} ${APPROVAL} --ht-mcp-port "$PORT" "$PROMPT"
+../target/release/claude-task run ${DEBUG} ${APPROVAL} "$PROMPT"

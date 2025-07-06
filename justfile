@@ -328,10 +328,35 @@ build-ht-mcp version="latest":
 
 # Docker Commands
 
+# Prepare ht-mcp binaries for Docker build
+[group('docker')]
+prepare-docker:
+    #!/usr/bin/env bash
+    echo "🔨 Preparing ht-mcp binaries for Docker build..."
+    
+    # Try to build ht-mcp, but continue if it fails (Windows builds might fail on macOS/Linux)
+    if just build-ht-mcp; then
+        echo "✅ ht-mcp build completed successfully"
+    else
+        echo "⚠️  ht-mcp build had errors (likely Windows targets), continuing with existing binaries..."
+    fi
+    
+    # Check if we have the required Linux binaries
+    if [ ! -f "modules/ht-mcp/release/latest/ht-mcp-linux-x86_64" ] || [ ! -f "modules/ht-mcp/release/latest/ht-mcp-linux-aarch64" ]; then
+        echo "❌ Required Linux binaries not found in modules/ht-mcp/release/latest/"
+        echo "   Please ensure ht-mcp-linux-x86_64 and ht-mcp-linux-aarch64 exist"
+        exit 1
+    fi
+    
+    echo "📁 Copying ht-mcp release files to docker/ht-mcp-release..."
+    rm -rf docker/ht-mcp-release
+    cp -r modules/ht-mcp/release docker/ht-mcp-release
+    echo "✅ Docker build preparation complete"
+
 # Build Docker image using buildx
 [group('docker')]
 docker-bake:
-    @docker buildx bake -f docker/docker-bake.hcl
+    @docker buildx bake -f docker/docker-bake.hcl --no-cache
 
 # Test Docker setup
 [group('docker')]

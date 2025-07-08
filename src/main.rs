@@ -59,7 +59,7 @@ enum WorktreeCommands {
     #[command(visible_alias = "o")]
     Open,
     /// Clean up all claude-task git worktrees
-    #[command(visible_alias = "clean")]
+    #[command(visible_alias = "cl")]
     Clean {
         /// Skip confirmation prompt
         #[arg(long, short = 'y')]
@@ -195,6 +195,52 @@ fn find_git_repo_root(start_path: &Path) -> Result<PathBuf> {
             None => return Err(anyhow::anyhow!("No git repository found")),
         }
     }
+}
+
+fn get_repo_name(worktree_path: &Path) -> String {
+    // Try to get repo name from git remote
+    // Git handles worktrees automatically, so we can just run from the worktree path
+    if let Ok(output) = Command::new("git")
+        .args(["config", "--get", "remote.origin.url"])
+        .current_dir(worktree_path)
+        .output()
+    {
+        if output.status.success() {
+            let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+            // Extract org/repo from URL
+            // Handle HTTPS format: https://github.com/org/repo.git
+            if url.starts_with("https://") || url.starts_with("http://") {
+                // Remove protocol and domain
+                let path_part = url
+                    .split("://")
+                    .nth(1)
+                    .and_then(|s| s.split('/').skip(1).collect::<Vec<_>>().join("/").into());
+
+                if let Some(path) = path_part {
+                    let clean_path = path.strip_suffix(".git").unwrap_or(&path);
+                    if clean_path.contains('/') {
+                        return clean_path.to_string();
+                    }
+                }
+            }
+
+            // Handle SSH format: git@github.com:org/repo.git
+            if let Some(repo_part) = url.split(':').nth(1) {
+                let clean_path = repo_part.strip_suffix(".git").unwrap_or(repo_part);
+                if clean_path.contains('/') {
+                    return clean_path.to_string();
+                }
+            }
+        }
+    }
+
+    // Fallback to directory name
+    worktree_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("unknown")
+        .to_string()
 }
 
 fn get_worktree_directory(worktree_base_dir: &str) -> Result<PathBuf> {
@@ -400,9 +446,13 @@ fn print_worktree_info(path: &str, head: &str, branch: &str) {
         " (worktree)"
     };
 
+    // Get repository name
+    let repo_name = get_repo_name(&path_buf);
+
     // Check worktree status
     println!("{icon} {dir_name}{type_label}");
     println!("   Path: {path}");
+    println!("   Repository: {repo_name}");
     println!("   Branch: {clean_branch}");
     println!(
         "   HEAD: {}",
@@ -417,7 +467,7 @@ fn print_worktree_info(path: &str, head: &str, branch: &str) {
             if status.is_clean() {
                 if status.is_likely_merged {
                     let merge_type = status.merge_info.as_deref().unwrap_or("merged");
-                    println!("   Status: {status_icon} Clean ({})", merge_type);
+                    println!("   Status: {status_icon} Clean ({merge_type})");
                 } else {
                     println!("   Status: {status_icon} Clean");
                 }
@@ -428,8 +478,7 @@ fn print_worktree_info(path: &str, head: &str, branch: &str) {
                 if status.is_likely_merged {
                     if let Some(ref info) = status.merge_info {
                         println!(
-                            "   Note: Branch appears to be {} - remote may have been deleted",
-                            info
+                            "   Note: Branch appears to be {info} - remote may have been deleted"
                         );
                     }
                 }
@@ -438,7 +487,7 @@ fn print_worktree_info(path: &str, head: &str, branch: &str) {
                 if !status.changed_files.is_empty() {
                     println!("   Changed files:");
                     for file in &status.changed_files {
-                        println!("     - {}", file);
+                        println!("     - {file}");
                     }
                 }
 
@@ -446,7 +495,7 @@ fn print_worktree_info(path: &str, head: &str, branch: &str) {
                 if !status.untracked_files.is_empty() {
                     println!("   Untracked files:");
                     for file in &status.untracked_files {
-                        println!("     - {}", file);
+                        println!("     - {file}");
                     }
                 }
 
@@ -454,12 +503,12 @@ fn print_worktree_info(path: &str, head: &str, branch: &str) {
                 if !status.unpushed_commits.is_empty() && !status.is_likely_merged {
                     println!("   Unpushed commits:");
                     for (commit_id, message) in &status.unpushed_commits {
-                        println!("     - {} {}", commit_id, message);
+                        println!("     - {commit_id} {message}");
                     }
                 } else if !status.unpushed_commits.is_empty() && status.is_likely_merged {
                     println!("   Commits (likely already merged):");
                     for (commit_id, message) in &status.unpushed_commits {
-                        println!("     - {} {}", commit_id, message);
+                        println!("     - {commit_id} {message}");
                     }
                 }
             }
@@ -1074,8 +1123,8 @@ async fn clean_all_worktrees(
 
     // Display what will be cleaned
     println!("📋 Found {} worktrees:", worktree_status_list.len());
-    println!("   ✅ {} clean", clean_count);
-    println!("   ⚠️  {} unclean", unclean_count);
+    println!("   ✅ {clean_count} clean");
+    println!("   ⚠️  {unclean_count} unclean");
     println!();
 
     for (i, (path, _, branch, status)) in worktree_status_list.iter().enumerate() {
@@ -1095,12 +1144,10 @@ async fn clean_all_worktrees(
                         " (will clean)"
                     },
                 )
+            } else if force {
+                ("⚠️", " (will force clean)")
             } else {
-                if force {
-                    ("⚠️", " (will force clean)")
-                } else {
-                    ("⚠️", "")
-                }
+                ("⚠️", "")
             }
         } else {
             ("❓", "")
@@ -1150,12 +1197,12 @@ async fn clean_all_worktrees(
     // Ask for confirmation unless skipped
     if !skip_confirmation {
         println!();
-        
+
         // Show info about unclean worktrees if any exist and not forcing
         if unclean_count > 0 && !force {
             println!("ℹ️  Unclean worktrees require --force flag to remove.");
         }
-        
+
         print!(
             "❓ Are you sure you want to delete {worktrees_to_clean} {action_description}? [y/N]: "
         );
@@ -1242,9 +1289,9 @@ async fn clean_all_worktrees(
     }
 
     println!("✅ Worktree cleanup completed!");
-    println!("   Cleaned: {} worktrees", cleaned_count);
+    println!("   Cleaned: {cleaned_count} worktrees");
     if skipped_count > 0 {
-        println!("   Skipped: {} unclean worktrees", skipped_count);
+        println!("   Skipped: {skipped_count} unclean worktrees");
     }
 
     Ok(())
@@ -1480,11 +1527,7 @@ fn check_if_branch_merged(branch: &str, worktree_path: &Path) -> (bool, Option<S
 
             // Check if there are any changes between merge-base..branch that aren't in main
             if let Ok(diff_output) = Command::new("git")
-                .args([
-                    "diff",
-                    "--exit-code",
-                    &format!("{}..{}", merge_base, branch),
-                ])
+                .args(["diff", "--exit-code", &format!("{merge_base}..{branch}")])
                 .current_dir(worktree_path)
                 .output()
             {
@@ -1496,7 +1539,7 @@ fn check_if_branch_merged(branch: &str, worktree_path: &Path) -> (bool, Option<S
                 // There are changes, check if they're already in main using git log --grep
                 // First, get the commit messages from the branch
                 if let Ok(log_output) = Command::new("git")
-                    .args(["log", "--oneline", &format!("{}..{}", merge_base, branch)])
+                    .args(["log", "--oneline", &format!("{merge_base}..{branch}")])
                     .current_dir(worktree_path)
                     .output()
                 {
@@ -1512,8 +1555,8 @@ fn check_if_branch_merged(branch: &str, worktree_path: &Path) -> (bool, Option<S
                                     "log",
                                     "--oneline",
                                     "--grep",
-                                    &format!("{}\\|#[0-9]\\+", branch),
-                                    &format!("{}..{}", merge_base, main_branch),
+                                    &format!("{branch}\\|#[0-9]\\+"),
+                                    &format!("{merge_base}..{main_branch}"),
                                 ])
                                 .current_dir(worktree_path)
                                 .output()
@@ -1526,11 +1569,7 @@ fn check_if_branch_merged(branch: &str, worktree_path: &Path) -> (bool, Option<S
                             // Alternative: Check if the file changes are already in main
                             // Get list of files changed in the branch
                             if let Ok(files_output) = Command::new("git")
-                                .args([
-                                    "diff",
-                                    "--name-only",
-                                    &format!("{}..{}", merge_base, branch),
-                                ])
+                                .args(["diff", "--name-only", &format!("{merge_base}..{branch}")])
                                 .current_dir(worktree_path)
                                 .output()
                             {
@@ -1550,8 +1589,8 @@ fn check_if_branch_merged(branch: &str, worktree_path: &Path) -> (bool, Option<S
                                                         "diff",
                                                         "--no-index",
                                                         "--quiet",
-                                                        &format!("{}:{}", branch, file),
-                                                        &format!("{}:{}", main_branch, file),
+                                                        &format!("{branch}:{file}"),
+                                                        &format!("{main_branch}:{file}"),
                                                     ])
                                                     .current_dir(worktree_path)
                                                     .output()

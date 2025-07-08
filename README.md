@@ -18,6 +18,9 @@ Claude Task is a Rust-based CLI utility that streamlines the creation of isolate
 - Generates timestamped worktree directories
 - Automatically creates feature branches with sanitized names
 - Configurable branch prefixes and worktree locations
+- **Intelligent status checking** - detects uncommitted changes, unpushed commits, and missing remotes
+- **Smart cleanup** - separates clean vs unclean worktrees with --force protection
+- **Merge detection** - identifies squash-merged branches to prevent false positives
 
 ### Docker Integration
 - Creates and manages Docker volumes for persistent environments
@@ -123,13 +126,15 @@ The MCP server exposes the following tools for use within Claude Code:
 
 - `setup` - Setup credentials and environment
 - `create_worktree` - Create a git worktree for a task
-- `list_worktree` - List current git worktrees  
+- `list_worktree` - List current git worktrees with status information
 - `remove_worktree` - Remove and clean up a worktree
+- `clean_worktree` - Clean up all claude-task git worktrees
+- `check_worktree_status` - Check git worktree status for uncommitted changes and unpushed commits
 - `init_docker_volume` - Initialize Docker volumes
 - `list_docker_volume` - List Docker volumes
 - `clean_docker_volume` - Clean Docker volumes
 - `run_task` - Run a Claude task in a Docker container
-- `clean` - Clean up all worktrees and volumes
+- `clean` - Clean up both worktrees and volumes
 
 #### MCP Configuration
 You can pass MCP configuration files to tasks using the `--mcp-config` flag:
@@ -200,7 +205,7 @@ Example MCP configuration file:
    # Create a worktree manually
    claude-task worktree create my-feature  # or: claude-task wt c my-feature
    
-   # List existing worktrees
+   # List existing worktrees with status information
    claude-task worktree list  # or: claude-task wt l
    
    # Remove a worktree
@@ -208,12 +213,38 @@ Example MCP configuration file:
    
    # Open a worktree in your IDE
    claude-task worktree open  # or: claude-task wt o
+   
+   # Clean up all worktrees (with status checking)
+   claude-task worktree clean  # or: claude-task wt cl
+   
+   # Force clean unclean worktrees
+   claude-task worktree clean --force  # or: claude-task wt cl -f
    ```
 
-5. **Cleanup**
+5. **Worktree Status Checking**
+   ```bash
+   # Check status of current worktree
+   claude-task worktree list  # Shows status of all worktrees
+   
+   # Status indicators:
+   # ✅ Clean - no uncommitted changes, no unpushed commits, has remote tracking
+   # ⚠️  Unclean - has uncommitted changes, unpushed commits, or no remote
+   # 🔀 Merged - branch appears to be merged (squash-merge detection)
+   
+   # Clean worktrees are safe to remove
+   # Unclean worktrees require --force flag for removal
+   ```
+
+6. **Cleanup**
    ```bash
    # Clean up all resources (worktrees and volumes)
    claude-task clean
+   
+   # Clean only worktrees (preserves Docker volumes)
+   claude-task worktree clean  # or: claude-task wt cl
+   
+   # Force clean including unclean worktrees
+   claude-task clean --force
    ```
 
 ### Global Options
@@ -261,11 +292,17 @@ claude-task/
 │   ├── credentials.rs              # macOS keychain credential extraction
 │   ├── docker.rs                   # Docker volume and container management
 │   ├── mcp.rs                      # MCP (Model Context Protocol) server implementation
-│   └── permission.rs               # Approval tool permission validation
+│   ├── permission.rs               # Approval tool permission validation
+│   ├── assets.rs                   # Asset management
+│   ├── lib.rs                      # Library exports
+│   └── assets/
+│       └── CLAUDE.md               # User memory asset
 ├── docker/                         # Docker configuration
 │   ├── Dockerfile                  # Multi-stage container build
 │   ├── docker-bake.hcl             # Docker buildx configuration
+│   ├── docker-compose.yml          # Docker compose configuration
 │   ├── entrypoint.sh               # Container initialization with HT-MCP
+│   ├── ht-mcp-release/             # HT-MCP release binaries
 │   └── nginx/
 │       └── ht-mcp-proxy.conf       # NGINX WebSocket proxy for HT-MCP
 ├── scripts/                        # Execution scripts
@@ -274,9 +311,17 @@ claude-task/
 │   ├── test-docker.sh              # Docker testing
 │   └── default-ht-mcp-prompt.txt   # Default comprehensive test prompt
 ├── examples/                       # Examples and testing
-│   └── local-nginx-test/           # Local NGINX testing setup
+│   ├── local-nginx-test/           # Local NGINX testing setup
+│   └── mcp.json                    # Example MCP configuration
 ├── tests/                          # Integration tests
+│   ├── mcp.rs                      # MCP integration tests
+│   └── test.mcp.json               # Test MCP configuration
 ├── modules/ht-mcp/                 # HT-MCP submodule
+├── build.rs                        # Build script for MCP help generation
+├── Cargo.toml                      # Rust project configuration
+├── Cargo.lock                      # Dependency lock file
+├── CLAUDE.md                       # Project instructions for Claude
+├── README.md                       # Project documentation
 └── justfile                        # Development commands
 
 ## Configuration
@@ -309,6 +354,9 @@ When running the MCP server (`claude-task mcp`), the following apply:
 - **MCP server connection issues**: Ensure the server is running with `claude-task mcp`
 - **Invalid approval tool permission**: Use format `mcp__<server_name>__<tool_name>`
 - **MCP config file not found**: Verify the path and file exists
+- **Worktree shows as unclean**: Check for uncommitted changes with `git status` or unpushed commits
+- **False positive unclean status**: May indicate squash-merged branch - check if branch was merged via PR
+- **Clean command skips worktrees**: Use `--force` flag to remove unclean worktrees
 
 ### HT-MCP Specific Issues
 - **HT-MCP binary not found**: Ensure the HT-MCP submodule is properly initialized

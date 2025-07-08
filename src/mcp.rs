@@ -387,8 +387,7 @@ impl ClaudeTaskMcpServer {
             if status.is_likely_merged {
                 if let Some(ref info) = status.merge_info {
                     output.push_str(&format!(
-                        "\nNote: Branch appears to be {} - remote may have been deleted\n",
-                        info
+                        "\nNote: Branch appears to be {info} - remote may have been deleted\n"
                     ));
                 }
             }
@@ -422,7 +421,7 @@ impl ClaudeTaskMcpServer {
             }
         } else if status.is_likely_merged {
             if let Some(ref info) = status.merge_info {
-                output.push_str(&format!("\nMerge status: {}\n", info));
+                output.push_str(&format!("\nMerge status: {info}\n"));
             }
         }
 

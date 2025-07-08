@@ -58,6 +58,16 @@ enum WorktreeCommands {
     /// Open a worktree in your IDE
     #[command(visible_alias = "o")]
     Open,
+    /// Clean up all claude-task git worktrees
+    #[command(visible_alias = "clean")]
+    Clean {
+        /// Skip confirmation prompt
+        #[arg(long, short = 'y')]
+        yes: bool,
+        /// Force removal of worktrees even if they have uncommitted changes
+        #[arg(long, short = 'f')]
+        force: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -151,12 +161,15 @@ enum Commands {
         #[arg(long, default_value = "4618")]
         web_view_proxy_port: u16,
     },
-    /// Clean up all claude-task git worktrees and docker volumes
+    /// Clean up both claude-task git worktrees and docker volumes
     #[command(visible_alias = "c")]
     Clean {
         /// Skip confirmation prompt
         #[arg(long, short = 'y')]
         yes: bool,
+        /// Force removal of worktrees even if they have uncommitted changes
+        #[arg(long, short = 'f')]
+        force: bool,
     },
     /// Launch MCP server on stdio
     #[command(after_help = MCP_HELP_TEXT)]
@@ -387,6 +400,7 @@ fn print_worktree_info(path: &str, head: &str, branch: &str) {
         " (worktree)"
     };
 
+    // Check worktree status
     println!("{icon} {dir_name}{type_label}");
     println!("   Path: {path}");
     println!("   Branch: {clean_branch}");
@@ -394,6 +408,67 @@ fn print_worktree_info(path: &str, head: &str, branch: &str) {
         "   HEAD: {}",
         if head.len() > 7 { &head[..7] } else { head }
     );
+
+    match check_worktree_status(&path_buf) {
+        Ok(status) => {
+            let status_icon = status.get_status_icon();
+            let details = status.get_status_details();
+
+            if status.is_clean() {
+                if status.is_likely_merged {
+                    let merge_type = status.merge_info.as_deref().unwrap_or("merged");
+                    println!("   Status: {status_icon} Clean ({})", merge_type);
+                } else {
+                    println!("   Status: {status_icon} Clean");
+                }
+            } else {
+                println!("   Status: {status_icon} Unclean: {}", details.join(", "));
+
+                // Show merge info if detected
+                if status.is_likely_merged {
+                    if let Some(ref info) = status.merge_info {
+                        println!(
+                            "   Note: Branch appears to be {} - remote may have been deleted",
+                            info
+                        );
+                    }
+                }
+
+                // Show changed files if any
+                if !status.changed_files.is_empty() {
+                    println!("   Changed files:");
+                    for file in &status.changed_files {
+                        println!("     - {}", file);
+                    }
+                }
+
+                // Show untracked files if any
+                if !status.untracked_files.is_empty() {
+                    println!("   Untracked files:");
+                    for file in &status.untracked_files {
+                        println!("     - {}", file);
+                    }
+                }
+
+                // Show unpushed commits if any
+                if !status.unpushed_commits.is_empty() && !status.is_likely_merged {
+                    println!("   Unpushed commits:");
+                    for (commit_id, message) in &status.unpushed_commits {
+                        println!("     - {} {}", commit_id, message);
+                    }
+                } else if !status.unpushed_commits.is_empty() && status.is_likely_merged {
+                    println!("   Commits (likely already merged):");
+                    for (commit_id, message) in &status.unpushed_commits {
+                        println!("     - {} {}", commit_id, message);
+                    }
+                }
+            }
+        }
+        Err(_) => {
+            println!("   Status: ❓ Status unknown");
+        }
+    };
+
     println!();
 }
 
@@ -960,11 +1035,12 @@ async fn clean_shared_volumes(debug: bool) -> Result<()> {
     Ok(())
 }
 
-async fn clean_all_worktrees_and_volumes(
+async fn clean_all_worktrees(
     branch_prefix: &str,
     skip_confirmation: bool,
+    force: bool,
 ) -> Result<()> {
-    println!("🧹 Finding all worktrees and volumes to clean up...");
+    println!("🧹 Finding all worktrees to clean up...");
     println!("Branch prefix: '{branch_prefix}'");
     println!();
 
@@ -976,46 +1052,113 @@ async fn clean_all_worktrees_and_volumes(
         return Ok(());
     }
 
-    // Extract task IDs from branch names
-    let mut task_ids = Vec::new();
-    for (_, _, branch) in &worktrees {
-        let clean_branch = if branch.starts_with("refs/heads/") {
-            branch.strip_prefix("refs/heads/").unwrap_or(branch)
-        } else {
-            branch
-        };
+    // Check cleanliness of each worktree
+    let mut worktree_status_list = Vec::new();
+    let mut clean_count = 0;
+    let mut unclean_count = 0;
 
-        if let Some(task_id) = clean_branch.strip_prefix(branch_prefix) {
-            if !task_id.is_empty() {
-                task_ids.push(task_id.to_string());
+    for (path, head, branch) in &worktrees {
+        let path_buf = PathBuf::from(path);
+        let status = check_worktree_status(&path_buf).ok();
+
+        if let Some(ref s) = status {
+            if s.is_clean() {
+                clean_count += 1;
+            } else {
+                unclean_count += 1;
             }
         }
+
+        worktree_status_list.push((path.clone(), head.clone(), branch.clone(), status));
     }
 
-    // Extract claude volumes that will be cleaned up
-    let docker_manager = DockerManager::new().context("Failed to create Docker manager")?;
-
-    let volumes = docker_manager.list_claude_volumes().await?;
-
     // Display what will be cleaned
-    println!("📋 Found {} worktrees to clean up:", worktrees.len());
-    for (i, (path, _, branch)) in worktrees.iter().enumerate() {
+    println!("📋 Found {} worktrees:", worktree_status_list.len());
+    println!("   ✅ {} clean", clean_count);
+    println!("   ⚠️  {} unclean", unclean_count);
+    println!();
+
+    for (i, (path, _, branch, status)) in worktree_status_list.iter().enumerate() {
         let clean_branch = if branch.starts_with("refs/heads/") {
             branch.strip_prefix("refs/heads/").unwrap_or(branch)
         } else {
             branch
         };
-        println!("  {}. Branch: {} (Path: {})", i + 1, clean_branch, path);
+
+        let (status_icon, cleanup_indicator) = if let Some(s) = status {
+            if s.is_clean() {
+                (
+                    "✅",
+                    if force || unclean_count == 0 {
+                        ""
+                    } else {
+                        " (will clean)"
+                    },
+                )
+            } else {
+                if force {
+                    ("⚠️", " (will force clean)")
+                } else {
+                    ("⚠️", "")
+                }
+            }
+        } else {
+            ("❓", "")
+        };
+
+        print!("  {}. Branch: {} (Path: {})", i + 1, clean_branch, path);
+
+        if let Some(s) = status {
+            if s.is_clean() {
+                print!(" {status_icon} Clean{cleanup_indicator}");
+            } else {
+                let details = s.get_status_details();
+                print!(
+                    " {status_icon} Unclean: {}{cleanup_indicator}",
+                    details.join(", ")
+                );
+            }
+        } else {
+            print!(" {status_icon} Status unknown");
+        }
+
+        println!();
     }
 
-    println!("🐋 Found {} claude volumes to clean up:", volumes.len());
-    for (i, (name, _)) in volumes.iter().enumerate() {
-        println!("  {}. Volume: {}", i + 1, name);
+    // Determine what we're going to clean
+    let (worktrees_to_clean, action_description) = if force {
+        (
+            worktree_status_list.len(),
+            "all worktrees (including unclean ones)",
+        )
+    } else if unclean_count > 0 {
+        (clean_count, "clean worktrees only")
+    } else {
+        (clean_count, "all worktrees")
+    };
+
+    if worktrees_to_clean == 0 {
+        println!();
+        println!("ℹ️  No clean worktrees to remove.");
+        if unclean_count > 0 {
+            println!("   Use --force flag to remove unclean worktrees:");
+            println!("   ct worktree clean --force");
+        }
+        return Ok(());
     }
 
     // Ask for confirmation unless skipped
     if !skip_confirmation {
-        print!("❓ Are you sure you want to delete all these worktrees and volumes? [y/N]: ");
+        println!();
+        
+        // Show info about unclean worktrees if any exist and not forcing
+        if unclean_count > 0 && !force {
+            println!("ℹ️  Unclean worktrees require --force flag to remove.");
+        }
+        
+        print!(
+            "❓ Are you sure you want to delete {worktrees_to_clean} {action_description}? [y/N]: "
+        );
         use std::io::{self, Write};
         io::stdout().flush().context("Failed to flush stdout")?;
 
@@ -1034,11 +1177,11 @@ async fn clean_all_worktrees_and_volumes(
     println!("🧹 Starting cleanup...");
     println!();
 
-    // Create Docker manager for volume cleanup
-    let _docker_manager = DockerManager::new().context("Failed to create Docker manager")?;
+    // Clean up each worktree (only clean ones unless force is used)
+    let mut cleaned_count = 0;
+    let mut skipped_count = 0;
 
-    // Clean up each worktree and its volumes
-    for (i, (_, _, branch)) in worktrees.iter().enumerate() {
+    for (_, _, branch, status) in worktree_status_list.iter() {
         let clean_branch = if branch.starts_with("refs/heads/") {
             branch.strip_prefix("refs/heads/").unwrap_or(branch)
         } else {
@@ -1047,28 +1190,87 @@ async fn clean_all_worktrees_and_volumes(
 
         if let Some(task_id) = clean_branch.strip_prefix(branch_prefix) {
             if !task_id.is_empty() {
-                println!(
-                    "🗑️  [{}/{}] Cleaning up task '{}'...",
-                    i + 1,
-                    worktrees.len(),
-                    task_id
-                );
-
-                // Remove worktree (this will also delete the branch)
-                if let Err(e) = remove_git_worktree(task_id, branch_prefix) {
-                    println!("⚠️  Failed to remove worktree for '{task_id}': {e}");
+                let should_clean = if let Some(s) = status {
+                    force || s.is_clean()
                 } else {
-                    println!("✓ Worktree removed for task '{task_id}'");
-                }
+                    // If status unknown, only clean with force
+                    force
+                };
 
-                println!();
+                if should_clean {
+                    let status_warning = if let Some(s) = status {
+                        if !s.is_clean() {
+                            " (⚠️  Unclean - forced removal)"
+                        } else {
+                            ""
+                        }
+                    } else {
+                        ""
+                    };
+
+                    println!(
+                        "🗑️  [{}/{}] Cleaning up task '{}'{}...",
+                        cleaned_count + 1,
+                        worktrees_to_clean,
+                        task_id,
+                        status_warning
+                    );
+
+                    // Remove worktree (this will also delete the branch)
+                    if let Err(e) = remove_git_worktree(task_id, branch_prefix) {
+                        println!("⚠️  Failed to remove worktree for '{task_id}': {e}");
+                    } else {
+                        println!("✓ Worktree removed for task '{task_id}'");
+                        cleaned_count += 1;
+                    }
+
+                    println!();
+                } else {
+                    // Skip unclean worktrees when not using force
+                    skipped_count += 1;
+                    if skipped_count == 1 {
+                        println!("⏭️  Skipping unclean worktrees (use --force to clean them):");
+                    }
+                    println!("   - {task_id}");
+                }
             }
         }
     }
 
-    println!("✅ Cleanup completed!");
-    println!("   Processed {} worktrees", worktrees.len());
-    println!("   Cleaned {} task volumes", task_ids.len());
+    if skipped_count > 0 {
+        println!();
+    }
+
+    println!("✅ Worktree cleanup completed!");
+    println!("   Cleaned: {} worktrees", cleaned_count);
+    if skipped_count > 0 {
+        println!("   Skipped: {} unclean worktrees", skipped_count);
+    }
+
+    Ok(())
+}
+
+async fn clean_all_worktrees_and_volumes(
+    branch_prefix: &str,
+    skip_confirmation: bool,
+    force: bool,
+) -> Result<()> {
+    println!("🧹 Cleaning up both worktrees and volumes...");
+    println!();
+
+    // Clean worktrees first
+    clean_all_worktrees(branch_prefix, skip_confirmation, force).await?;
+
+    println!();
+    println!("🐋 Now cleaning Docker volumes...");
+    println!();
+
+    // Then clean volumes
+    clean_shared_volumes(false).await?;
+
+    println!();
+    println!("✅ Complete cleanup finished!");
+    println!("   Both worktrees and volumes have been cleaned");
 
     Ok(())
 }
@@ -1167,6 +1369,402 @@ fn should_clean_worktree(
     clean_branch.starts_with(branch_prefix)
 }
 
+#[derive(Debug)]
+pub struct WorktreeStatus {
+    pub has_uncommitted_changes: bool,
+    pub has_unpushed_commits: bool,
+    pub has_no_remote: bool,
+    pub current_branch: String,
+    pub remote_branch: Option<String>,
+    pub ahead_count: usize,
+    pub behind_count: usize,
+    pub changed_files: Vec<String>,
+    pub untracked_files: Vec<String>,
+    pub unpushed_commits: Vec<(String, String)>, // (commit_id, message)
+    pub is_likely_merged: bool,
+    pub merge_info: Option<String>, // e.g., "squash-merged", "merged", "PR #123"
+}
+
+impl WorktreeStatus {
+    pub fn is_clean(&self) -> bool {
+        !self.has_uncommitted_changes
+            && (!self.has_unpushed_commits || self.is_likely_merged)
+            && (!self.has_no_remote || self.is_likely_merged)
+    }
+
+    pub fn get_status_icon(&self) -> &'static str {
+        if self.is_clean() {
+            "✅"
+        } else {
+            "⚠️"
+        }
+    }
+
+    pub fn get_status_details(&self) -> Vec<String> {
+        let mut details = Vec::new();
+
+        if self.has_uncommitted_changes {
+            details.push("uncommitted changes".to_string());
+        }
+
+        if self.has_unpushed_commits && self.ahead_count > 0 {
+            details.push(format!("{} unpushed commits", self.ahead_count));
+        }
+
+        if self.behind_count > 0 {
+            details.push(format!("{} commits behind remote", self.behind_count));
+        }
+
+        if self.has_no_remote {
+            details.push("no remote tracking branch".to_string());
+        }
+
+        details
+    }
+}
+
+fn check_if_branch_merged(branch: &str, worktree_path: &Path) -> (bool, Option<String>) {
+    // Try to detect if this branch has been merged into main/master
+
+    // First, find the main branch (main or master)
+    let main_branches = ["main", "master"];
+    let mut main_branch = None;
+
+    for mb in &main_branches {
+        let output = Command::new("git")
+            .args(["rev-parse", "--verify", mb])
+            .current_dir(worktree_path)
+            .output();
+
+        if let Ok(output) = output {
+            if output.status.success() {
+                main_branch = Some(*mb);
+                break;
+            }
+        }
+    }
+
+    let main_branch = match main_branch {
+        Some(mb) => mb,
+        None => return (false, None), // Can't detect without a main branch
+    };
+
+    // Method 1: Check if branch is in --merged list (regular merge)
+    if let Ok(output) = Command::new("git")
+        .args(["branch", "--merged", main_branch])
+        .current_dir(worktree_path)
+        .output()
+    {
+        if output.status.success() {
+            let output_str = String::from_utf8_lossy(&output.stdout);
+            for line in output_str.lines() {
+                let line = line.trim().trim_start_matches('*').trim();
+                if line == branch {
+                    return (true, Some("merged".to_string()));
+                }
+            }
+        }
+    }
+
+    // Method 2: Check if all changes are already in main (squash merge detection)
+    // This compares the diff between the merge-base and branch tip
+    if let Ok(merge_base_output) = Command::new("git")
+        .args(["merge-base", main_branch, branch])
+        .current_dir(worktree_path)
+        .output()
+    {
+        if merge_base_output.status.success() {
+            let merge_base = String::from_utf8_lossy(&merge_base_output.stdout)
+                .trim()
+                .to_string();
+
+            // Check if there are any changes between merge-base..branch that aren't in main
+            if let Ok(diff_output) = Command::new("git")
+                .args([
+                    "diff",
+                    "--exit-code",
+                    &format!("{}..{}", merge_base, branch),
+                ])
+                .current_dir(worktree_path)
+                .output()
+            {
+                if diff_output.status.success() {
+                    // No diff means no changes
+                    return (true, Some("no changes".to_string()));
+                }
+
+                // There are changes, check if they're already in main using git log --grep
+                // First, get the commit messages from the branch
+                if let Ok(log_output) = Command::new("git")
+                    .args(["log", "--oneline", &format!("{}..{}", merge_base, branch)])
+                    .current_dir(worktree_path)
+                    .output()
+                {
+                    if log_output.status.success() {
+                        let log_str = String::from_utf8_lossy(&log_output.stdout);
+                        let commit_count = log_str.lines().count();
+
+                        if commit_count > 0 {
+                            // Check if main has any commits that might be squash merges of this branch
+                            // Look for commits that mention the branch name or PR
+                            if let Ok(main_log) = Command::new("git")
+                                .args([
+                                    "log",
+                                    "--oneline",
+                                    "--grep",
+                                    &format!("{}\\|#[0-9]\\+", branch),
+                                    &format!("{}..{}", merge_base, main_branch),
+                                ])
+                                .current_dir(worktree_path)
+                                .output()
+                            {
+                                if main_log.status.success() && !main_log.stdout.is_empty() {
+                                    return (true, Some("likely squash-merged".to_string()));
+                                }
+                            }
+
+                            // Alternative: Check if the file changes are already in main
+                            // Get list of files changed in the branch
+                            if let Ok(files_output) = Command::new("git")
+                                .args([
+                                    "diff",
+                                    "--name-only",
+                                    &format!("{}..{}", merge_base, branch),
+                                ])
+                                .current_dir(worktree_path)
+                                .output()
+                            {
+                                if files_output.status.success() {
+                                    let files = String::from_utf8_lossy(&files_output.stdout);
+                                    let file_count = files.lines().count();
+
+                                    if file_count > 0 {
+                                        // For each file, check if its content in branch matches main
+                                        let mut all_changes_in_main = true;
+
+                                        for file in files.lines() {
+                                            if !file.is_empty() {
+                                                // Compare file content between branch and main
+                                                if let Ok(diff) = Command::new("git")
+                                                    .args([
+                                                        "diff",
+                                                        "--no-index",
+                                                        "--quiet",
+                                                        &format!("{}:{}", branch, file),
+                                                        &format!("{}:{}", main_branch, file),
+                                                    ])
+                                                    .current_dir(worktree_path)
+                                                    .output()
+                                                {
+                                                    if !diff.status.success() {
+                                                        // Files differ
+                                                        all_changes_in_main = false;
+                                                        break;
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        if all_changes_in_main && commit_count > 1 {
+                                            // Multiple commits but all changes are in main = likely squash merge
+                                            return (
+                                                true,
+                                                Some("likely squash-merged".to_string()),
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Method 3: Try GitHub CLI if available to check PR status
+    if let Ok(output) = Command::new("gh")
+        .args([
+            "pr",
+            "list",
+            "--state",
+            "merged",
+            "--head",
+            branch,
+            "--json",
+            "number,title",
+        ])
+        .current_dir(worktree_path)
+        .output()
+    {
+        if output.status.success() && !output.stdout.is_empty() {
+            let json_str = String::from_utf8_lossy(&output.stdout);
+            if json_str.contains("number") {
+                // Simple check - if there's a merged PR for this branch
+                return (true, Some("PR merged".to_string()));
+            }
+        }
+    }
+
+    (false, None)
+}
+
+pub fn check_worktree_status(worktree_path: &Path) -> Result<WorktreeStatus> {
+    // Check for uncommitted changes and get file lists
+    let status_output = Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(worktree_path)
+        .output()
+        .context("Failed to execute git status command")?;
+
+    if !status_output.status.success() {
+        let stderr = String::from_utf8_lossy(&status_output.stderr);
+        return Err(anyhow::anyhow!("Git status command failed: {}", stderr));
+    }
+
+    let status_str = String::from_utf8_lossy(&status_output.stdout);
+    let mut changed_files = Vec::new();
+    let mut untracked_files = Vec::new();
+
+    for line in status_str.lines() {
+        if line.len() >= 3 {
+            let status_code = &line[0..2];
+            let file_path = line[3..].trim();
+
+            if status_code.contains('?') {
+                untracked_files.push(file_path.to_string());
+            } else {
+                changed_files.push(format!("{} {}", status_code.trim(), file_path));
+            }
+        }
+    }
+
+    let has_uncommitted_changes = !changed_files.is_empty() || !untracked_files.is_empty();
+
+    // Get current branch
+    let branch_output = Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .current_dir(worktree_path)
+        .output()
+        .context("Failed to get current branch")?;
+
+    let current_branch = if branch_output.status.success() {
+        String::from_utf8_lossy(&branch_output.stdout)
+            .trim()
+            .to_string()
+    } else {
+        "unknown".to_string()
+    };
+
+    // Check if branch has a remote tracking branch
+    let remote_output = Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"])
+        .current_dir(worktree_path)
+        .output()
+        .context("Failed to check remote tracking branch")?;
+
+    let (has_no_remote, remote_branch) = if remote_output.status.success() {
+        let remote = String::from_utf8_lossy(&remote_output.stdout)
+            .trim()
+            .to_string();
+        (false, Some(remote))
+    } else {
+        (true, None)
+    };
+
+    // Check ahead/behind status and get unpushed commits
+    let (ahead_count, behind_count, has_unpushed_commits, unpushed_commits) = if !has_no_remote {
+        let rev_list_output = Command::new("git")
+            .args(["rev-list", "--left-right", "--count", "HEAD...@{u}"])
+            .current_dir(worktree_path)
+            .output()
+            .context("Failed to check ahead/behind status")?;
+
+        if rev_list_output.status.success() {
+            let output = String::from_utf8_lossy(&rev_list_output.stdout);
+            let parts: Vec<&str> = output.trim().split('\t').collect();
+
+            let ahead = parts
+                .first()
+                .and_then(|s| s.parse::<usize>().ok())
+                .unwrap_or(0);
+            let behind = parts
+                .get(1)
+                .and_then(|s| s.parse::<usize>().ok())
+                .unwrap_or(0);
+
+            // Get unpushed commits if there are any
+            let mut commits = Vec::new();
+            if ahead > 0 {
+                let log_output = Command::new("git")
+                    .args(["log", "--oneline", "@{u}..HEAD"])
+                    .current_dir(worktree_path)
+                    .output()
+                    .context("Failed to get unpushed commits")?;
+
+                if log_output.status.success() {
+                    let log_str = String::from_utf8_lossy(&log_output.stdout);
+                    for line in log_str.lines() {
+                        if let Some(space_pos) = line.find(' ') {
+                            let commit_id = line[..space_pos].to_string();
+                            let message = line[space_pos + 1..].to_string();
+                            commits.push((commit_id, message));
+                        }
+                    }
+                }
+            }
+
+            (ahead, behind, ahead > 0, commits)
+        } else {
+            (0, 0, false, Vec::new())
+        }
+    } else {
+        // If no remote, check if we have any commits
+        let log_output = Command::new("git")
+            .args(["log", "--oneline", "-10"]) // Get last 10 commits if no remote
+            .current_dir(worktree_path)
+            .output()
+            .context("Failed to check commits")?;
+
+        let mut commits = Vec::new();
+        if log_output.status.success() && !log_output.stdout.is_empty() {
+            let log_str = String::from_utf8_lossy(&log_output.stdout);
+            for line in log_str.lines() {
+                if let Some(space_pos) = line.find(' ') {
+                    let commit_id = line[..space_pos].to_string();
+                    let message = line[space_pos + 1..].to_string();
+                    commits.push((commit_id, message));
+                }
+            }
+        }
+
+        let has_commits = !commits.is_empty();
+        (commits.len(), 0, has_commits, commits)
+    };
+
+    // Check if branch has been merged (only if it has unpushed commits or no remote)
+    let (is_likely_merged, merge_info) = if has_unpushed_commits || has_no_remote {
+        check_if_branch_merged(&current_branch, worktree_path)
+    } else {
+        (false, None)
+    };
+
+    Ok(WorktreeStatus {
+        has_uncommitted_changes,
+        has_unpushed_commits,
+        has_no_remote,
+        current_branch,
+        remote_branch,
+        ahead_count,
+        behind_count,
+        changed_files,
+        untracked_files,
+        unpushed_commits,
+        is_likely_merged,
+        merge_info,
+    })
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -1188,6 +1786,9 @@ async fn main() -> Result<()> {
             }
             WorktreeCommands::Open => {
                 select_worktree_interactively(&cli.branch_prefix)?;
+            }
+            WorktreeCommands::Clean { yes, force } => {
+                clean_all_worktrees(&cli.branch_prefix, yes, force).await?;
             }
         },
         Some(Commands::Docker { command }) => match command {
@@ -1234,8 +1835,8 @@ async fn main() -> Result<()> {
             };
             run_claude_task(config).await?;
         }
-        Some(Commands::Clean { yes }) => {
-            clean_all_worktrees_and_volumes(&cli.branch_prefix, yes).await?;
+        Some(Commands::Clean { yes, force }) => {
+            clean_all_worktrees_and_volumes(&cli.branch_prefix, yes, force).await?;
         }
         Some(Commands::Mcp) => {
             mcp::run_mcp_server().await?;

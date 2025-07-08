@@ -1,9 +1,9 @@
+use super::assets;
 use anyhow::{Context, Result};
 use keyring::Entry;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
-use super::assets;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct OAuthAccount {
@@ -176,7 +176,7 @@ pub async fn setup_credentials_and_config(task_base_home_dir: &str, debug: bool)
     let claude_md_content = assets::get_claude_md_content();
     fs::write(&claude_md_path, claude_md_content)
         .with_context(|| format!("Failed to write CLAUDE.md to {claude_md_path}"))?;
-    
+
     println!("✓ CLAUDE.md written to {claude_md_path}");
 
     // Note: MCP configuration is now handled dynamically in the container

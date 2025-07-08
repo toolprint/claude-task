@@ -14,9 +14,9 @@ use claude_task::permission::ApprovalToolPermission;
 
 // Import internal functions from the main module
 use crate::{
-    clean_all_worktrees_and_volumes, clean_shared_volumes, create_git_worktree,
-    init_shared_volumes, remove_git_worktree, run_claude_task, setup_credentials_and_config,
-    TaskRunConfig,
+    check_worktree_status, clean_all_worktrees, clean_all_worktrees_and_volumes,
+    clean_shared_volumes, create_git_worktree, init_shared_volumes, remove_git_worktree,
+    run_claude_task, setup_credentials_and_config, TaskRunConfig,
 };
 
 #[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
@@ -51,6 +51,13 @@ pub struct RemoveWorktreeOptions {
     #[serde(flatten)]
     pub global_options: GlobalOptions,
     pub task_id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct CleanWorktreeOptions {
+    #[serde(flatten)]
+    pub global_options: GlobalOptions,
+    pub force: Option<bool>,
 }
 
 #[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
@@ -90,6 +97,14 @@ pub struct RunTaskOptions {
 pub struct CleanOptions {
     #[serde(flatten)]
     pub global_options: GlobalOptions,
+    pub force: Option<bool>,
+}
+
+#[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct CheckWorktreeStatusOptions {
+    #[serde(flatten)]
+    pub global_options: GlobalOptions,
+    pub worktree_path: Option<String>,
 }
 
 // Individual tool input structs for each subcommand use the Options structs directly
@@ -185,6 +200,27 @@ impl ClaudeTaskMcpServer {
 
         let output = format!("Cleanup complete for task '{}'", args.task_id);
         Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    #[tool(description = "Clean up all claude-task git worktrees")]
+    async fn clean_worktree(
+        &self,
+        Parameters(args): Parameters<CleanWorktreeOptions>,
+    ) -> Result<CallToolResult, McpError> {
+        let branch_prefix = args
+            .global_options
+            .branch_prefix
+            .unwrap_or_else(|| "claude-task/".to_string());
+        let force = args.force.unwrap_or(false);
+
+        // Always skip confirmation in MCP mode
+        clean_all_worktrees(&branch_prefix, true, force)
+            .await
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+
+        Ok(CallToolResult::success(vec![Content::text(
+            "Worktree cleanup completed successfully".to_string(),
+        )]))
     }
 
     #[tool(description = "Initialize shared Docker volumes for Claude tasks")]
@@ -291,7 +327,7 @@ impl ClaudeTaskMcpServer {
         )]))
     }
 
-    #[tool(description = "Clean up all claude-task git worktrees and docker volumes")]
+    #[tool(description = "Clean up both claude-task git worktrees and docker volumes")]
     async fn clean(
         &self,
         Parameters(args): Parameters<CleanOptions>,
@@ -300,15 +336,104 @@ impl ClaudeTaskMcpServer {
             .global_options
             .branch_prefix
             .unwrap_or_else(|| "claude-task/".to_string());
+        let force = args.force.unwrap_or(false);
 
         // Always skip confirmation since we're deferring to the permission tool to approve or reject
-        clean_all_worktrees_and_volumes(&branch_prefix, true)
+        clean_all_worktrees_and_volumes(&branch_prefix, true, force)
             .await
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
         Ok(CallToolResult::success(vec![Content::text(
             "Cleanup completed successfully".to_string(),
         )]))
+    }
+
+    #[tool(description = "Check git worktree status for uncommitted changes and unpushed commits")]
+    async fn check_worktree_status(
+        &self,
+        Parameters(args): Parameters<CheckWorktreeStatusOptions>,
+    ) -> Result<CallToolResult, McpError> {
+        use std::path::PathBuf;
+
+        let worktree_path = if let Some(path) = args.worktree_path {
+            PathBuf::from(path)
+        } else {
+            std::env::current_dir().map_err(|e| McpError::internal_error(e.to_string(), None))?
+        };
+
+        let status = check_worktree_status(&worktree_path)
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+
+        let details = status.get_status_details();
+
+        let mut output = format!(
+            "Status: {}\n",
+            if status.is_clean() {
+                "✅ Clean"
+            } else {
+                "⚠️ Unclean"
+            }
+        );
+        output.push_str(&format!("Branch: {}\n", status.current_branch));
+
+        if let Some(remote) = &status.remote_branch {
+            output.push_str(&format!("Remote: {remote}\n"));
+        }
+
+        if !status.is_clean() {
+            output.push_str(&format!("\nIssues: {}\n", details.join(", ")));
+
+            // Show merge info if detected
+            if status.is_likely_merged {
+                if let Some(ref info) = status.merge_info {
+                    output.push_str(&format!(
+                        "\nNote: Branch appears to be {} - remote may have been deleted\n",
+                        info
+                    ));
+                }
+            }
+
+            // Show changed files if any
+            if !status.changed_files.is_empty() {
+                output.push_str("\nChanged files:\n");
+                for file in &status.changed_files {
+                    output.push_str(&format!("  - {file}\n"));
+                }
+            }
+
+            // Show untracked files if any
+            if !status.untracked_files.is_empty() {
+                output.push_str("\nUntracked files:\n");
+                for file in &status.untracked_files {
+                    output.push_str(&format!("  - {file}\n"));
+                }
+            }
+
+            // Show unpushed commits if any
+            if !status.unpushed_commits.is_empty() {
+                if status.is_likely_merged {
+                    output.push_str("\nCommits (likely already merged):\n");
+                } else {
+                    output.push_str("\nUnpushed commits:\n");
+                }
+                for (commit_id, message) in &status.unpushed_commits {
+                    output.push_str(&format!("  - {commit_id} {message}\n"));
+                }
+            }
+        } else if status.is_likely_merged {
+            if let Some(ref info) = status.merge_info {
+                output.push_str(&format!("\nMerge status: {}\n", info));
+            }
+        }
+
+        if status.behind_count > 0 {
+            output.push_str(&format!(
+                "\nNote: {} commits behind remote\n",
+                status.behind_count
+            ));
+        }
+
+        Ok(CallToolResult::success(vec![Content::text(output)]))
     }
 
     fn add_global_options(&self, cmd_args: &mut Vec<String>, global_options: &GlobalOptions) {

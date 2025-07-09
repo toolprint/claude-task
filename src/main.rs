@@ -11,6 +11,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 include!(concat!(env!("OUT_DIR"), "/mcp_help.rs"));
 
 mod assets;
+mod config;
 mod credentials;
 mod docker;
 mod mcp;
@@ -106,6 +107,10 @@ struct Cli {
     /// Enable debug mode
     #[arg(short = 'd', long, global = true)]
     debug: bool,
+
+    /// Path to the configuration file (defaults to ~/.claude-task/config.json)
+    #[arg(long, global = true, value_name = "PATH", help = "Path to config file")]
+    config_path: Option<PathBuf>,
 
     #[command(subcommand)]
     command: Option<Commands>,

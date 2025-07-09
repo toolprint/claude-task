@@ -13,8 +13,11 @@ use futures_util::stream::StreamExt;
 use std::collections::HashMap;
 use std::path::Path;
 
+use crate::config::DockerConfig;
+
 pub struct DockerManager {
     docker: Docker,
+    config: DockerConfig,
 }
 
 #[derive(Debug, Clone)]
@@ -46,21 +49,21 @@ impl Default for ClaudeTaskConfig {
 }
 
 impl DockerManager {
-    pub fn new() -> Result<Self> {
+    pub fn new(config: DockerConfig) -> Result<Self> {
         let docker =
             Docker::connect_with_local_defaults().context("Failed to connect to Docker daemon")?;
-        Ok(Self { docker })
+        Ok(Self { docker, config })
     }
 
     /// Create necessary volumes for Claude task
     pub async fn create_volumes(&self, _config: &ClaudeTaskConfig) -> Result<()> {
         let volumes = vec![
             (
-                "claude-task-npm-cache".to_string(),
+                self.config.volumes.npm_cache.clone(),
                 "Shared npm cache volume".to_string(),
             ),
             (
-                "claude-task-node-cache".to_string(),
+                self.config.volumes.node_cache.clone(),
                 "Shared node cache volume".to_string(),
             ),
         ];
@@ -127,7 +130,7 @@ impl DockerManager {
         // Create build options
         let build_options = BuildImageOptions {
             dockerfile: "Dockerfile".to_string(),
-            t: "claude-task:dev".to_string(),
+            t: self.config.image_name.clone(),
             buildargs: {
                 let mut args = HashMap::new();
                 args.insert("TZ".to_string(), config.timezone.clone());
@@ -190,7 +193,7 @@ impl DockerManager {
             )
             .await?;
 
-        let container_name = format!("claude-task-{}", config.task_id);
+        let container_name = format!("{}{}", self.config.container_name_prefix, config.task_id);
 
         // Remove existing container if it exists
         let remove_options = RemoveContainerOptions {
@@ -268,20 +271,20 @@ impl DockerManager {
         let mut mounts = vec![
             Mount {
                 target: Some("/home/base".to_string()),
-                source: Some("claude-task-home".to_string()),
+                source: Some(self.config.volumes.home.clone()),
                 typ: Some(MountTypeEnum::VOLUME),
                 read_only: Some(true),
                 ..Default::default()
             },
             Mount {
                 target: Some("/home/node/.npm".to_string()),
-                source: Some("claude-task-npm-cache".to_string()),
+                source: Some(self.config.volumes.npm_cache.clone()),
                 typ: Some(MountTypeEnum::VOLUME),
                 ..Default::default()
             },
             Mount {
                 target: Some("/home/node/.cache".to_string()),
-                source: Some("claude-task-node-cache".to_string()),
+                source: Some(self.config.volumes.node_cache.clone()),
                 typ: Some(MountTypeEnum::VOLUME),
                 ..Default::default()
             },
@@ -401,7 +404,7 @@ impl DockerManager {
         }
 
         let mut container_config = Config {
-            image: Some("claude-task:dev".to_string()),
+            image: Some(self.config.image_name.clone()),
             cmd: Some(cmd),
             env: Some(env_vars),
             working_dir: Some("/workspace".to_string()),
@@ -535,7 +538,7 @@ impl DockerManager {
 
     /// Check if claude-task-home volume exists
     pub async fn check_home_volume_exists(&self) -> Result<bool> {
-        match self.docker.inspect_volume("claude-task-home").await {
+        match self.docker.inspect_volume(&self.config.volumes.home).await {
             Ok(_) => Ok(true),
             Err(e) if e.to_string().contains("no such volume") => Ok(false),
             Err(e) => Err(anyhow::anyhow!("Failed to check volume: {}", e)),

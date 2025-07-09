@@ -34,6 +34,7 @@ struct TaskRunConfig<'a> {
     open_editor: bool,
     ht_mcp_port: Option<u16>,
     web_view_proxy_port: u16,
+    docker_config: &'a config::DockerConfig,
 }
 
 use config::Config;
@@ -632,6 +633,7 @@ async fn init_shared_volumes(
     refresh_credentials: bool,
     task_base_home_dir: &str,
     debug: bool,
+    docker_config: &config::DockerConfig,
 ) -> Result<()> {
     println!("Initializing shared Docker volumes for Claude tasks...");
     if debug {
@@ -641,7 +643,8 @@ async fn init_shared_volumes(
     println!();
 
     // Create Docker manager
-    let docker_manager = DockerManager::new().context("Failed to create Docker manager")?;
+    let docker_manager =
+        DockerManager::new(docker_config.clone()).context("Failed to create Docker manager")?;
 
     // Create cache volumes (npm and node)
     println!("Creating cache volumes...");
@@ -656,9 +659,18 @@ async fn init_shared_volumes(
 
     println!();
     println!("✅ All shared volumes are ready:");
-    println!("   - claude-task-home (credentials and config)");
-    println!("   - claude-task-npm-cache (shared npm cache)");
-    println!("   - claude-task-node-cache (shared node cache)");
+    println!(
+        "   - {} (credentials and config)",
+        docker_config.volumes.home
+    );
+    println!(
+        "   - {} (shared npm cache)",
+        docker_config.volumes.npm_cache
+    );
+    println!(
+        "   - {} (shared node cache)",
+        docker_config.volumes.node_cache
+    );
 
     Ok(())
 }
@@ -922,11 +934,15 @@ async fn run_claude_task(config: TaskRunConfig<'_>) -> Result<()> {
     println!();
 
     // Create Docker manager
-    let docker_manager = DockerManager::new().context("Failed to create Docker manager")?;
+    let docker_manager = DockerManager::new(config.docker_config.clone())
+        .context("Failed to create Docker manager")?;
 
-    // Check if claude-task-home volume exists, run setup if it doesn't
+    // Check if home volume exists, run setup if it doesn't
     if config.debug {
-        println!("🔍 Checking if claude-task-home volume exists...");
+        println!(
+            "🔍 Checking if {} volume exists...",
+            config.docker_config.volumes.home
+        );
     }
     let home_volume_exists = docker_manager.check_home_volume_exists().await?;
     if config.debug {
@@ -934,11 +950,14 @@ async fn run_claude_task(config: TaskRunConfig<'_>) -> Result<()> {
     }
 
     if !home_volume_exists {
-        println!("🔧 claude-task-home volume not found, running setup...");
+        println!(
+            "🔧 {} volume not found, running setup...",
+            config.docker_config.volumes.home
+        );
         setup_credentials_and_config(config.task_base_home_dir, config.debug).await?;
         println!();
     } else if config.debug {
-        println!("✓ claude-task-home volume found");
+        println!("✓ {} volume found", config.docker_config.volumes.home);
     }
 
     // Create task configuration
@@ -1001,18 +1020,25 @@ async fn run_claude_task(config: TaskRunConfig<'_>) -> Result<()> {
     } else {
         // Check if the image exists, if not suggest using --build
         if docker_manager
-            .check_image_exists("claude-task:dev")
+            .check_image_exists(&config.docker_config.image_name)
             .await
             .is_err()
         {
-            println!("⚠️  Image 'claude-task:dev' not found.");
+            println!("⚠️  Image '{}' not found.", config.docker_config.image_name);
             println!("   Use '--build' flag to build the image first, or build it manually:");
-            println!("   docker build -t claude-task:dev ./claude-task/");
+            println!(
+                "   docker build -t {} ./claude-task/",
+                config.docker_config.image_name
+            );
             return Err(anyhow::anyhow!(
-                "Image 'claude-task:dev' not found. Use --build flag to build it."
+                "Image '{}' not found. Use --build flag to build it.",
+                config.docker_config.image_name
             ));
         }
-        println!("✓ Using existing image: claude-task:dev");
+        println!(
+            "✓ Using existing image: {}",
+            config.docker_config.image_name
+        );
     }
 
     // Run Claude task
@@ -1028,15 +1054,16 @@ async fn run_claude_task(config: TaskRunConfig<'_>) -> Result<()> {
         .await?;
 
     println!("   Task ID: {task_id}");
-    println!("   Shared volume: claude-task-home");
+    println!("   Shared volume: {}", config.docker_config.volumes.home);
 
     Ok(())
 }
 
-async fn list_docker_volumes() -> Result<()> {
+async fn list_docker_volumes(docker_config: &config::DockerConfig) -> Result<()> {
     println!("📦 Listing Claude task Docker volumes...");
 
-    let docker_manager = DockerManager::new().context("Failed to create Docker manager")?;
+    let docker_manager =
+        DockerManager::new(docker_config.clone()).context("Failed to create Docker manager")?;
 
     let volumes = docker_manager.list_claude_volumes().await?;
 
@@ -1052,7 +1079,7 @@ async fn list_docker_volumes() -> Result<()> {
     Ok(())
 }
 
-async fn clean_shared_volumes(debug: bool) -> Result<()> {
+async fn clean_shared_volumes(debug: bool, docker_config: &config::DockerConfig) -> Result<()> {
     println!("🧹 Cleaning all shared Docker volumes...");
     if debug {
         println!("🔍 Will remove all three shared volumes");
@@ -1060,9 +1087,9 @@ async fn clean_shared_volumes(debug: bool) -> Result<()> {
     println!();
 
     let volume_names = vec![
-        "claude-task-home",
-        "claude-task-npm-cache",
-        "claude-task-node-cache",
+        &docker_config.volumes.home,
+        &docker_config.volumes.npm_cache,
+        &docker_config.volumes.node_cache,
     ];
 
     for volume_name in &volume_names {
@@ -1307,6 +1334,7 @@ async fn clean_all_worktrees_and_volumes(
     branch_prefix: &str,
     skip_confirmation: bool,
     force: bool,
+    docker_config: &config::DockerConfig,
 ) -> Result<()> {
     println!("🧹 Cleaning up both worktrees and volumes...");
     println!();
@@ -1319,7 +1347,7 @@ async fn clean_all_worktrees_and_volumes(
     println!();
 
     // Then clean volumes
-    clean_shared_volumes(false).await?;
+    clean_shared_volumes(false, docker_config).await?;
 
     println!();
     println!("✅ Complete cleanup finished!");
@@ -1858,14 +1886,19 @@ async fn main() -> Result<()> {
             DockerCommands::Init {
                 refresh_credentials,
             } => {
-                init_shared_volumes(refresh_credentials, &cli.task_base_home_dir, cli.debug)
-                    .await?;
+                init_shared_volumes(
+                    refresh_credentials,
+                    &cli.task_base_home_dir,
+                    cli.debug,
+                    &config.docker,
+                )
+                .await?;
             }
             DockerCommands::List => {
-                list_docker_volumes().await?;
+                list_docker_volumes(&config.docker).await?;
             }
             DockerCommands::Clean => {
-                clean_shared_volumes(cli.debug).await?;
+                clean_shared_volumes(cli.debug, &config.docker).await?;
             }
         },
         Some(Commands::Run {
@@ -1881,7 +1914,7 @@ async fn main() -> Result<()> {
             web_view_proxy_port,
         }) => {
             let debug_mode = cli.debug; // Use global debug flag
-            let config = TaskRunConfig {
+            let task_config = TaskRunConfig {
                 prompt: &prompt,
                 task_id,
                 build,
@@ -1895,11 +1928,12 @@ async fn main() -> Result<()> {
                 open_editor,
                 ht_mcp_port,
                 web_view_proxy_port,
+                docker_config: &config.docker,
             };
-            run_claude_task(config).await?;
+            run_claude_task(task_config).await?;
         }
         Some(Commands::Clean { yes, force }) => {
-            clean_all_worktrees_and_volumes(&cli.branch_prefix, yes, force).await?;
+            clean_all_worktrees_and_volumes(&cli.branch_prefix, yes, force, &config.docker).await?;
         }
         Some(Commands::Mcp) => {
             mcp::run_mcp_server().await?;

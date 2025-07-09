@@ -14,9 +14,8 @@ use claude_task::permission::ApprovalToolPermission;
 
 // Import internal functions from the main module
 use crate::{
-    check_worktree_status, clean_all_worktrees, clean_all_worktrees_and_volumes,
-    clean_shared_volumes, create_git_worktree, init_shared_volumes, remove_git_worktree,
-    run_claude_task, setup_credentials_and_config, TaskRunConfig,
+    check_worktree_status, clean_all_worktrees, create_git_worktree, remove_git_worktree,
+    setup_credentials_and_config,
 };
 
 #[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
@@ -332,20 +331,22 @@ impl ClaudeTaskMcpServer {
         &self,
         Parameters(args): Parameters<CleanOptions>,
     ) -> Result<CallToolResult, McpError> {
-        let branch_prefix = args
-            .global_options
-            .branch_prefix
-            .unwrap_or_else(|| "claude-task/".to_string());
         let force = args.force.unwrap_or(false);
 
-        // Always skip confirmation since we're deferring to the permission tool to approve or reject
-        clean_all_worktrees_and_volumes(&branch_prefix, true, force)
+        // Use subprocess since we need docker config which isn't available in MCP context
+        let mut cmd_args = vec!["clean".to_string()];
+        if force {
+            cmd_args.push("--force".to_string());
+        }
+        cmd_args.push("--yes".to_string()); // Always skip confirmation in MCP
+        self.add_global_options(&mut cmd_args, &args.global_options);
+
+        let output = self
+            .execute_claude_task_command(&cmd_args)
             .await
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
-        Ok(CallToolResult::success(vec![Content::text(
-            "Cleanup completed successfully".to_string(),
-        )]))
+        Ok(CallToolResult::success(vec![Content::text(output)]))
     }
 
     #[tool(description = "Check git worktree status for uncommitted changes and unpushed commits")]

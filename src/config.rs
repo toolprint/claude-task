@@ -111,10 +111,6 @@ impl Default for Config {
 }
 
 impl Config {
-    pub fn create_default() -> Self {
-        Self::default()
-    }
-
     pub fn default_config_path() -> PathBuf {
         dirs::home_dir()
             .expect("Could not determine home directory")
@@ -123,11 +119,33 @@ impl Config {
     }
 
     pub fn load(path: Option<&PathBuf>) -> Result<Self> {
-        let config_path = path.cloned().unwrap_or_else(Self::default_config_path);
+        let (config_path, is_custom_path) = match path {
+            Some(p) => (p.clone(), true),
+            None => (Self::default_config_path(), false),
+        };
 
         if !config_path.exists() {
-            // Return default config if file doesn't exist
-            return Ok(Self::default());
+            if is_custom_path {
+                // Error if custom path doesn't exist
+                anyhow::bail!(
+                    "Config file not found at specified path: {}",
+                    config_path.display()
+                );
+            } else {
+                // Create default config at default location
+                let default_config = Self::default();
+                default_config.save(&config_path).with_context(|| {
+                    format!(
+                        "Failed to create default config file at: {}",
+                        config_path.display()
+                    )
+                })?;
+                println!(
+                    "📝 Created default config file at: {}",
+                    config_path.display()
+                );
+                return Ok(default_config);
+            }
         }
 
         let contents = std::fs::read_to_string(&config_path)

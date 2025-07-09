@@ -108,12 +108,11 @@ async fn request_biometric_authentication() -> Result<()> {
     Ok(())
 }
 
-pub fn read_and_filter_claude_config() -> Result<ClaudeConfig> {
-    let home_dir = std::env::var("HOME").context("Could not find HOME directory")?;
-    let claude_config_path = format!("{home_dir}/.claude.json");
+pub fn read_and_filter_claude_config(config_path: &str) -> Result<ClaudeConfig> {
+    let expanded_path = crate::config::Config::expand_tilde(config_path);
 
-    let content = fs::read_to_string(&claude_config_path)
-        .with_context(|| format!("Failed to read {claude_config_path}"))?;
+    let content = fs::read_to_string(&expanded_path)
+        .with_context(|| format!("Failed to read {}", expanded_path.display()))?;
 
     let full_config: FullClaudeConfig =
         serde_json::from_str(&content).context("Failed to parse claude config JSON")?;
@@ -129,7 +128,11 @@ pub fn read_and_filter_claude_config() -> Result<ClaudeConfig> {
 // Note: MCP configuration is now handled dynamically in the container
 // using 'claude mcp add-json' commands instead of static config files
 
-pub async fn setup_credentials_and_config(task_base_home_dir: &str, debug: bool) -> Result<()> {
+pub async fn setup_credentials_and_config(
+    task_base_home_dir: &str,
+    debug: bool,
+    claude_user_config: &crate::config::ClaudeUserConfig,
+) -> Result<()> {
     println!("Setting up Claude configuration...");
 
     // Expand home directory if needed
@@ -157,10 +160,10 @@ pub async fn setup_credentials_and_config(task_base_home_dir: &str, debug: bool)
 
     println!("✓ Keychain credentials extracted to {credentials_path}");
 
-    // Read and filter claude config
+    // Read and filter claude config from the user's actual config path
     println!("Reading and filtering claude config...");
-    let filtered_config =
-        read_and_filter_claude_config().context("Failed to read and filter claude config")?;
+    let filtered_config = read_and_filter_claude_config(&claude_user_config.config_path)
+        .context("Failed to read and filter claude config")?;
 
     // Write filtered config to base directory (not inside .claude folder)
     let filtered_json = serde_json::to_string_pretty(&filtered_config)
@@ -171,11 +174,29 @@ pub async fn setup_credentials_and_config(task_base_home_dir: &str, debug: bool)
 
     println!("✓ Filtered claude config written to {config_path}");
 
-    // Write the CLAUDE.md file to the claude directory
+    // Copy the user's CLAUDE.md if it exists, otherwise use default
+    let user_memory_path =
+        crate::config::Config::expand_tilde(&claude_user_config.user_memory_path);
     let claude_md_path = format!("{claude_dir}/CLAUDE.md");
-    let claude_md_content = assets::get_claude_md_content();
-    fs::write(&claude_md_path, claude_md_content)
-        .with_context(|| format!("Failed to write CLAUDE.md to {claude_md_path}"))?;
+
+    if user_memory_path.exists() {
+        println!("Copying user memory from {}", user_memory_path.display());
+        fs::copy(&user_memory_path, &claude_md_path).with_context(|| {
+            format!(
+                "Failed to copy CLAUDE.md from {} to {}",
+                user_memory_path.display(),
+                claude_md_path
+            )
+        })?;
+    } else {
+        println!(
+            "User memory not found at {}, using default",
+            user_memory_path.display()
+        );
+        let claude_md_content = assets::get_claude_md_content();
+        fs::write(&claude_md_path, claude_md_content)
+            .with_context(|| format!("Failed to write CLAUDE.md to {claude_md_path}"))?;
+    }
 
     println!("✓ CLAUDE.md written to {claude_md_path}");
 

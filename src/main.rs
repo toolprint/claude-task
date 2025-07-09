@@ -35,6 +35,7 @@ struct TaskRunConfig<'a> {
     ht_mcp_port: Option<u16>,
     web_view_proxy_port: u16,
     docker_config: &'a config::DockerConfig,
+    claude_user_config: &'a config::ClaudeUserConfig,
 }
 
 use config::Config;
@@ -634,6 +635,7 @@ async fn init_shared_volumes(
     task_base_home_dir: &str,
     debug: bool,
     docker_config: &config::DockerConfig,
+    claude_user_config: &config::ClaudeUserConfig,
 ) -> Result<()> {
     println!("Initializing shared Docker volumes for Claude tasks...");
     if debug {
@@ -654,7 +656,7 @@ async fn init_shared_volumes(
     // Run setup if requested
     if refresh_credentials {
         println!("Refreshing credentials...");
-        setup_credentials_and_config(task_base_home_dir, debug).await?;
+        setup_credentials_and_config(task_base_home_dir, debug, claude_user_config).await?;
     }
 
     println!();
@@ -954,7 +956,12 @@ async fn run_claude_task(config: TaskRunConfig<'_>) -> Result<()> {
             "🔧 {} volume not found, running setup...",
             config.docker_config.volumes.home
         );
-        setup_credentials_and_config(config.task_base_home_dir, config.debug).await?;
+        setup_credentials_and_config(
+            config.task_base_home_dir,
+            config.debug,
+            config.claude_user_config,
+        )
+        .await?;
         println!();
     } else if config.debug {
         println!("✓ {} volume found", config.docker_config.volumes.home);
@@ -1862,7 +1869,12 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Some(Commands::Setup) => {
-            setup_credentials_and_config(&cli.task_base_home_dir, cli.debug).await?;
+            setup_credentials_and_config(
+                &cli.task_base_home_dir,
+                cli.debug,
+                &config.claude_user_config,
+            )
+            .await?;
         }
         Some(Commands::Worktree { command }) => match command {
             WorktreeCommands::Create { task_id } => {
@@ -1891,6 +1903,7 @@ async fn main() -> Result<()> {
                     &cli.task_base_home_dir,
                     cli.debug,
                     &config.docker,
+                    &config.claude_user_config,
                 )
                 .await?;
             }
@@ -1929,6 +1942,7 @@ async fn main() -> Result<()> {
                 ht_mcp_port,
                 web_view_proxy_port,
                 docker_config: &config.docker,
+                claude_user_config: &config.claude_user_config,
             };
             run_claude_task(task_config).await?;
         }

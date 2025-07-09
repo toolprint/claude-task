@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -111,6 +111,10 @@ impl Default for Config {
 }
 
 impl Config {
+    pub fn create_default() -> Self {
+        Self::default()
+    }
+
     pub fn default_config_path() -> PathBuf {
         dirs::home_dir()
             .expect("Could not determine home directory")
@@ -118,18 +122,110 @@ impl Config {
             .join("config.json")
     }
 
-    pub fn load(_path: Option<&PathBuf>) -> Result<Self> {
-        // TODO: Implement config loading
-        Ok(Self::default())
+    pub fn load(path: Option<&PathBuf>) -> Result<Self> {
+        let config_path = path.cloned().unwrap_or_else(Self::default_config_path);
+
+        if !config_path.exists() {
+            // Return default config if file doesn't exist
+            return Ok(Self::default());
+        }
+
+        let contents = std::fs::read_to_string(&config_path)
+            .with_context(|| format!("Failed to read config file: {}", config_path.display()))?;
+
+        let config: Self = serde_json::from_str(&contents)
+            .with_context(|| format!("Failed to parse config file: {}", config_path.display()))?;
+
+        config
+            .validate()
+            .with_context(|| format!("Invalid config file: {}", config_path.display()))?;
+
+        Ok(config)
     }
 
-    pub fn save(&self, _path: &Path) -> Result<()> {
-        // TODO: Implement config saving
+    pub fn save(&self, path: &Path) -> Result<()> {
+        // Ensure parent directory exists
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).with_context(|| {
+                format!("Failed to create config directory: {}", parent.display())
+            })?;
+        }
+
+        let contents = serde_json::to_string_pretty(self).context("Failed to serialize config")?;
+
+        std::fs::write(path, contents)
+            .with_context(|| format!("Failed to write config file: {}", path.display()))?;
+
+        // Set file permissions to 600 (read/write for owner only)
+        #[cfg(unix)]
+        {
+            use std::fs;
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(path)?.permissions();
+            perms.set_mode(0o600);
+            fs::set_permissions(path, perms).with_context(|| {
+                format!(
+                    "Failed to set permissions on config file: {}",
+                    path.display()
+                )
+            })?;
+        }
+
         Ok(())
     }
 
     pub fn validate(&self) -> Result<()> {
-        // TODO: Implement validation
+        // Validate version
+        if self.version.is_empty() {
+            anyhow::bail!("Config version cannot be empty");
+        }
+
+        // Validate paths
+        if self.paths.worktree_base_dir.is_empty() {
+            anyhow::bail!("worktreeBaseDir cannot be empty");
+        }
+        if self.paths.task_base_home_dir.is_empty() {
+            anyhow::bail!("taskBaseHomeDir cannot be empty");
+        }
+        if self.paths.branch_prefix.is_empty() {
+            anyhow::bail!("branchPrefix cannot be empty");
+        }
+
+        // Validate Docker settings
+        if self.docker.image_name.is_empty() {
+            anyhow::bail!("Docker imageName cannot be empty");
+        }
+        if self.docker.volume_prefix.is_empty() {
+            anyhow::bail!("Docker volumePrefix cannot be empty");
+        }
+        if self.docker.container_name_prefix.is_empty() {
+            anyhow::bail!("Docker containerNamePrefix cannot be empty");
+        }
+
+        // Validate Docker volumes
+        if self.docker.volumes.home.is_empty() {
+            anyhow::bail!("Docker volumes.home cannot be empty");
+        }
+        if self.docker.volumes.npm_cache.is_empty() {
+            anyhow::bail!("Docker volumes.npmCache cannot be empty");
+        }
+        if self.docker.volumes.node_cache.is_empty() {
+            anyhow::bail!("Docker volumes.nodeCache cannot be empty");
+        }
+
+        // Validate port
+        if self.docker.default_web_view_proxy_port == 0 {
+            anyhow::bail!("defaultWebViewProxyPort must be greater than 0");
+        }
+
+        // Validate Claude user config
+        if self.claude_user_config.config_path.is_empty() {
+            anyhow::bail!("claudeUserConfig.configPath cannot be empty");
+        }
+        if self.claude_user_config.user_memory_path.is_empty() {
+            anyhow::bail!("claudeUserConfig.userMemoryPath cannot be empty");
+        }
+
         Ok(())
     }
 
@@ -141,5 +237,54 @@ impl Config {
         } else {
             PathBuf::from(path)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn test_default_config_is_valid() {
+        let config = Config::default();
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_save_and_load_config() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("config.json");
+
+        let config = Config::default();
+        config.save(&config_path).unwrap();
+
+        let loaded = Config::load(Some(&config_path)).unwrap();
+        assert_eq!(loaded.version, config.version);
+        assert_eq!(
+            loaded.paths.worktree_base_dir,
+            config.paths.worktree_base_dir
+        );
+    }
+
+    #[test]
+    fn test_expand_tilde() {
+        let home = dirs::home_dir().unwrap();
+        let expanded = Config::expand_tilde("~/test");
+        assert_eq!(expanded, home.join("test"));
+
+        let no_tilde = Config::expand_tilde("/absolute/path");
+        assert_eq!(no_tilde, PathBuf::from("/absolute/path"));
+    }
+
+    #[test]
+    fn test_invalid_config_validation() {
+        let mut config = Config::default();
+        config.paths.worktree_base_dir = String::new();
+        assert!(config.validate().is_err());
+
+        let mut config = Config::default();
+        config.docker.image_name = String::new();
+        assert!(config.validate().is_err());
     }
 }

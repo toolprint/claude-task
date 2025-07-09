@@ -23,6 +23,9 @@ target/
 # Local execution files
 output/
 
+# Notes
+notes/
+
 # Temporary files and logs
 examples/local-nginx-test/nginx-error.log
 examples/local-nginx-test/nginx-access.log

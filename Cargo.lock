@@ -527,6 +527,7 @@ dependencies = [
  "regex",
  "rmcp",
  "schemars 0.8.22",
+ "security-framework",
  "serde",
  "serde_json",
  "syn 2.0.104",

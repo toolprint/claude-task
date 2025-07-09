@@ -41,7 +41,10 @@ struct TaskRunConfig<'a> {
 }
 
 use config::Config;
-use credentials::setup_credentials_and_config;
+use credentials::{
+    check_credential_freshness, setup_credentials_and_config,
+    setup_credentials_and_config_with_cache,
+};
 use docker::{ClaudeTaskConfig, DockerManager};
 use handle_config::handle_config_command;
 
@@ -1044,8 +1047,36 @@ async fn run_claude_task(config: TaskRunConfig<'_>) -> Result<()> {
         )
         .await?;
         println!();
-    } else if config.debug {
-        println!("✓ {} volume found", config.docker_config.volumes.home);
+    } else {
+        // Volume exists, check if credentials need refreshing
+        if config.debug {
+            println!("✓ {} volume found", config.docker_config.volumes.home);
+            println!("🔍 Checking credential freshness...");
+        }
+
+        let credentials_need_refresh = check_credential_freshness(config.task_base_home_dir)
+            .await
+            .unwrap_or_else(|e| {
+                if config.debug {
+                    println!("⚠️  Warning: Could not check credential freshness: {e}");
+                    println!("   Assuming credentials need refresh for safety");
+                }
+                true
+            });
+
+        if credentials_need_refresh {
+            println!("🔄 Credentials have changed, refreshing...");
+            setup_credentials_and_config_with_cache(
+                config.task_base_home_dir,
+                config.debug,
+                config.claude_user_config,
+                true,
+            )
+            .await?;
+            println!();
+        } else if config.debug {
+            println!("✓ Credentials are up to date, skipping refresh");
+        }
     }
 
     // Create task configuration

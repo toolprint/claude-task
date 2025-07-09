@@ -374,7 +374,7 @@ test-ht-mcp:
 
 # Run claude-task with HT-MCP (with approval tool)
 [group('ht-mcp')]
-run-ht-mcp prompt="" port="3618" *args:
+run-ht-mcp *args prompt="" port="3618":
     #!/usr/bin/env bash
     echo "🚀 Running claude-task with HT-MCP..."
     cd scripts
@@ -386,7 +386,7 @@ run-ht-mcp prompt="" port="3618" *args:
 
 # Run claude-task with HT-MCP in debug mode
 [group('ht-mcp')]
-run-ht-mcp-debug prompt="" port="3618" *args:
+run-ht-mcp-debug *args prompt="" port="3618":
     #!/usr/bin/env bash
     echo "🔍 Running claude-task with HT-MCP (debug mode)..."
     cd scripts

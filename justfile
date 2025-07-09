@@ -3,6 +3,11 @@
 _default:
     @just -l -u
 
+# Brew installation
+[group('setup')]
+brew:
+    brew update & brew bundle install --file=./Brewfile
+
 # Rust Development Commands
 
 # Build the project

@@ -36,6 +36,7 @@ struct TaskRunConfig<'a> {
     web_view_proxy_port: u16,
 }
 
+use config::Config;
 use credentials::setup_credentials_and_config;
 use docker::{ClaudeTaskConfig, DockerManager};
 
@@ -1811,7 +1812,25 @@ pub fn check_worktree_status(worktree_path: &Path) -> Result<WorktreeStatus> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
+
+    // Load config file
+    let config = Config::load(cli.config_path.as_ref())?;
+
+    // Apply config values to CLI args if they're using defaults
+    // (CLI args always take precedence over config values)
+    if cli.worktree_base_dir == "~/.claude-task/worktrees" {
+        cli.worktree_base_dir = config.paths.worktree_base_dir.clone();
+    }
+    if cli.branch_prefix == "claude-task/" {
+        cli.branch_prefix = config.paths.branch_prefix.clone();
+    }
+    if cli.task_base_home_dir == "~/.claude-task/home" {
+        cli.task_base_home_dir = config.paths.task_base_home_dir.clone();
+    }
+    if !cli.debug {
+        cli.debug = config.global_option_defaults.debug;
+    }
 
     match cli.command {
         Some(Commands::Setup) => {

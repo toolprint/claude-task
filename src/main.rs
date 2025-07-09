@@ -14,6 +14,7 @@ mod assets;
 mod config;
 mod credentials;
 mod docker;
+mod handle_config;
 mod mcp;
 pub mod permission;
 
@@ -42,6 +43,7 @@ struct TaskRunConfig<'a> {
 use config::Config;
 use credentials::setup_credentials_and_config;
 use docker::{ClaudeTaskConfig, DockerManager};
+use handle_config::handle_config_command;
 
 #[derive(Subcommand)]
 enum WorktreeCommands {
@@ -90,6 +92,30 @@ enum DockerCommands {
     /// Clean up all shared Docker volumes
     #[command(visible_alias = "c")]
     Clean,
+}
+
+#[derive(Subcommand)]
+enum ConfigCommands {
+    /// Create default config file
+    #[command(visible_alias = "i")]
+    Init {
+        /// Force overwrite if config already exists
+        #[arg(long, short)]
+        force: bool,
+    },
+    /// Open config file in editor
+    #[command(visible_alias = "e")]
+    Edit,
+    /// Display current configuration
+    #[command(visible_alias = "s")]
+    Show {
+        /// Show config in JSON format (default: pretty print)
+        #[arg(long)]
+        json: bool,
+    },
+    /// Check config file validity
+    #[command(visible_alias = "v")]
+    Validate,
 }
 
 #[derive(Parser)]
@@ -179,6 +205,12 @@ enum Commands {
         /// Force removal of worktrees even if they have uncommitted changes
         #[arg(long, short = 'f')]
         force: bool,
+    },
+    /// Configuration management commands
+    #[command(visible_alias = "cf")]
+    Config {
+        #[command(subcommand)]
+        command: ConfigCommands,
     },
     /// Launch MCP server on stdio
     #[command(after_help = MCP_HELP_TEXT)]
@@ -2020,6 +2052,9 @@ async fn main() -> Result<()> {
                 config.worktree.auto_clean_on_remove,
             )
             .await?;
+        }
+        Some(Commands::Config { command }) => {
+            handle_config_command(command, cli.config_path.as_ref()).await?;
         }
         Some(Commands::Mcp) => {
             mcp::run_mcp_server().await?;

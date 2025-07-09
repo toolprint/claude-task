@@ -374,26 +374,34 @@ test-ht-mcp:
 
 # Run claude-task with HT-MCP (with approval tool)
 [group('ht-mcp')]
-run-ht-mcp *args prompt="" port="3618":
+run-ht-mcp prompt port *args:
     #!/usr/bin/env bash
     echo "🚀 Running claude-task with HT-MCP..."
     cd scripts
+    PORT={{port}}
+    if [ -z "$PORT" ]; then
+        PORT=3618
+    fi
     if [ -z "{{prompt}}" ]; then
-        ./run-with-ht-mcp.sh -a {{args}} {{port}}
+        ./run-with-ht-mcp.sh -a {{args}} $PORT
     else
-        ./run-with-ht-mcp.sh -a {{args}} {{port}} "{{prompt}}"
+        ./run-with-ht-mcp.sh -a {{args}} $PORT "{{prompt}}"
     fi
 
 # Run claude-task with HT-MCP in debug mode
 [group('ht-mcp')]
-run-ht-mcp-debug *args prompt="" port="3618":
+run-ht-mcp-debug prompt port *args:
     #!/usr/bin/env bash
     echo "🔍 Running claude-task with HT-MCP (debug mode)..."
     cd scripts
+    PORT={{port}}
+    if [ -z "$PORT" ]; then
+        PORT=3618
+    fi
     if [ -z "{{prompt}}" ]; then
-        ./run-with-ht-mcp.sh -a -d {{args}} {{port}}
+        ./run-with-ht-mcp.sh -a -d {{args}} $PORT
     else
-        ./run-with-ht-mcp.sh -a -d {{args}} {{port}} "{{prompt}}"
+        ./run-with-ht-mcp.sh -a -d {{args}} $PORT "{{prompt}}"
     fi
 
 # Start local nginx test environment

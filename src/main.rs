@@ -1932,6 +1932,25 @@ pub fn check_worktree_status(worktree_path: &Path) -> Result<WorktreeStatus> {
 async fn main() -> Result<()> {
     let mut cli = Cli::parse();
 
+    // Special handling for config init command - don't load config first
+    if let Some(Commands::Config {
+        command: ConfigCommands::Init { .. },
+    }) = &cli.command
+    {
+        return handle_config_command(
+            ConfigCommands::Init {
+                force: matches!(
+                    &cli.command,
+                    Some(Commands::Config {
+                        command: ConfigCommands::Init { force: true }
+                    })
+                ),
+            },
+            cli.config_path.as_ref(),
+        )
+        .await;
+    }
+
     // Load config file
     let config = Config::load(cli.config_path.as_ref())?;
 

@@ -1,4 +1,5 @@
 use anyhow::Result;
+#[allow(deprecated)]
 use rmcp::{
     handler::server::{router::tool::ToolRouter, tool::Parameters},
     model::*,

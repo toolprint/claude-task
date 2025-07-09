@@ -188,7 +188,8 @@ impl ClaudeTaskMcpServer {
             .branch_prefix
             .unwrap_or_else(|| "claude-task/".to_string());
 
-        remove_git_worktree(&args.task_id, &branch_prefix)
+        // Use false for auto_clean_branch since we don't have config access in MCP
+        remove_git_worktree(&args.task_id, &branch_prefix, false)
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
         let output = format!("Cleanup complete for task '{}'", args.task_id);
@@ -207,7 +208,8 @@ impl ClaudeTaskMcpServer {
         let force = args.force.unwrap_or(false);
 
         // Always skip confirmation in MCP mode
-        clean_all_worktrees(&branch_prefix, true, force)
+        // Use false for auto_clean_branch since we don't have config access in MCP
+        clean_all_worktrees(&branch_prefix, true, force, false)
             .await
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 

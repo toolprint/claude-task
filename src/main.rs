@@ -36,6 +36,7 @@ struct TaskRunConfig<'a> {
     web_view_proxy_port: u16,
     docker_config: &'a config::DockerConfig,
     claude_user_config: &'a config::ClaudeUserConfig,
+    worktree_config: &'a config::WorktreeConfig,
 }
 
 use config::Config;
@@ -529,7 +530,7 @@ fn print_worktree_info(path: &str, head: &str, branch: &str) {
     println!();
 }
 
-fn remove_git_worktree(task_id: &str, branch_prefix: &str) -> Result<()> {
+fn remove_git_worktree(task_id: &str, branch_prefix: &str, auto_clean_branch: bool) -> Result<()> {
     let current_dir = std::env::current_dir().context("Could not get current directory")?;
     let repo_root = find_git_repo_root(&current_dir)?;
 
@@ -608,20 +609,24 @@ fn remove_git_worktree(task_id: &str, branch_prefix: &str) -> Result<()> {
 
     println!("✓ Worktree removed: {worktree_path}");
 
-    // Delete the branch
-    println!("Deleting branch '{branch_name}'...");
-    let output = Command::new("git")
-        .args(["branch", "-D", &branch_name])
-        .current_dir(&repo_root)
-        .output()
-        .context("Failed to execute git branch delete command")?;
+    // Delete the branch if auto_clean_branch is enabled
+    if auto_clean_branch {
+        println!("Deleting branch '{branch_name}'...");
+        let output = Command::new("git")
+            .args(["branch", "-D", &branch_name])
+            .current_dir(&repo_root)
+            .output()
+            .context("Failed to execute git branch delete command")?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        println!("⚠️  Warning: Failed to delete branch '{branch_name}': {stderr}");
-        println!("   You may need to delete it manually with: git branch -D {branch_name}");
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            println!("⚠️  Warning: Failed to delete branch '{branch_name}': {stderr}");
+            println!("   You may need to delete it manually with: git branch -D {branch_name}");
+        } else {
+            println!("✓ Branch deleted: {branch_name}");
+        }
     } else {
-        println!("✓ Branch deleted: {branch_name}");
+        println!("ℹ️  Branch '{branch_name}' was kept (auto clean disabled)");
     }
 
     println!();
@@ -715,7 +720,48 @@ fn open_ide_in_path(path: &str, ide: &str) -> Result<()> {
     Ok(())
 }
 
-fn select_worktree_interactively(branch_prefix: &str) -> Result<()> {
+fn open_worktree(path: &str, default_open_command: Option<&str>) -> Result<()> {
+    if let Some(cmd) = default_open_command {
+        // Parse the command and arguments
+        let parts: Vec<&str> = cmd.split_whitespace().collect();
+        if parts.is_empty() {
+            return Err(anyhow::anyhow!("Empty open command"));
+        }
+
+        println!("🚀 Opening with custom command: {cmd} {path}");
+
+        let mut command = Command::new(parts[0]);
+        for arg in &parts[1..] {
+            command.arg(arg);
+        }
+        command.arg(path);
+
+        let output = command
+            .output()
+            .with_context(|| format!("Failed to execute custom command: {}", parts[0]))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(anyhow::anyhow!(
+                "Failed to open {} with {}: {}",
+                path,
+                cmd,
+                stderr
+            ));
+        }
+
+        println!("✓ Opened successfully");
+        Ok(())
+    } else {
+        // Default to cursor
+        open_ide_in_path(path, "cursor")
+    }
+}
+
+fn select_worktree_interactively(
+    branch_prefix: &str,
+    default_open_command: Option<&str>,
+) -> Result<()> {
     println!("🌿 Finding available worktrees...");
     let worktrees = get_matching_worktrees(branch_prefix)?;
 
@@ -774,7 +820,7 @@ fn select_worktree_interactively(branch_prefix: &str) -> Result<()> {
     let worktree_path = &selected_worktree.0;
 
     println!("Selected: {}", options[selection]);
-    open_ide_in_path(worktree_path, "cursor")?;
+    open_worktree(worktree_path, default_open_command)?;
 
     Ok(())
 }
@@ -924,7 +970,10 @@ async fn run_claude_task(config: TaskRunConfig<'_>) -> Result<()> {
 
             // Open IDE if requested
             if config.open_editor {
-                if let Err(e) = open_ide_in_path(&worktree_path.to_string_lossy(), "cursor") {
+                if let Err(e) = open_worktree(
+                    &worktree_path.to_string_lossy(),
+                    config.worktree_config.default_open_command.as_deref(),
+                ) {
                     println!("⚠️  Warning: Failed to open IDE: {e}");
                     println!("   Continuing with task execution...");
                 }
@@ -1128,6 +1177,7 @@ async fn clean_all_worktrees(
     branch_prefix: &str,
     skip_confirmation: bool,
     force: bool,
+    auto_clean_branch: bool,
 ) -> Result<()> {
     println!("🧹 Finding all worktrees to clean up...");
     println!("Branch prefix: '{branch_prefix}'");
@@ -1304,7 +1354,7 @@ async fn clean_all_worktrees(
                     );
 
                     // Remove worktree (this will also delete the branch)
-                    if let Err(e) = remove_git_worktree(task_id, branch_prefix) {
+                    if let Err(e) = remove_git_worktree(task_id, branch_prefix, auto_clean_branch) {
                         println!("⚠️  Failed to remove worktree for '{task_id}': {e}");
                     } else {
                         println!("✓ Worktree removed for task '{task_id}'");
@@ -1342,12 +1392,13 @@ async fn clean_all_worktrees_and_volumes(
     skip_confirmation: bool,
     force: bool,
     docker_config: &config::DockerConfig,
+    auto_clean_branch: bool,
 ) -> Result<()> {
     println!("🧹 Cleaning up both worktrees and volumes...");
     println!();
 
     // Clean worktrees first
-    clean_all_worktrees(branch_prefix, skip_confirmation, force).await?;
+    clean_all_worktrees(branch_prefix, skip_confirmation, force, auto_clean_branch).await?;
 
     println!();
     println!("🐋 Now cleaning Docker volumes...");
@@ -1885,13 +1936,26 @@ async fn main() -> Result<()> {
                 list_git_worktrees(&cli.branch_prefix)?;
             }
             WorktreeCommands::Remove { task_id } => {
-                remove_git_worktree(&task_id, &cli.branch_prefix)?;
+                remove_git_worktree(
+                    &task_id,
+                    &cli.branch_prefix,
+                    config.worktree.auto_clean_on_remove,
+                )?;
             }
             WorktreeCommands::Open => {
-                select_worktree_interactively(&cli.branch_prefix)?;
+                select_worktree_interactively(
+                    &cli.branch_prefix,
+                    config.worktree.default_open_command.as_deref(),
+                )?;
             }
             WorktreeCommands::Clean { yes, force } => {
-                clean_all_worktrees(&cli.branch_prefix, yes, force).await?;
+                clean_all_worktrees(
+                    &cli.branch_prefix,
+                    yes,
+                    force,
+                    config.worktree.auto_clean_on_remove,
+                )
+                .await?;
             }
         },
         Some(Commands::Docker { command }) => match command {
@@ -1943,11 +2007,19 @@ async fn main() -> Result<()> {
                 web_view_proxy_port,
                 docker_config: &config.docker,
                 claude_user_config: &config.claude_user_config,
+                worktree_config: &config.worktree,
             };
             run_claude_task(task_config).await?;
         }
         Some(Commands::Clean { yes, force }) => {
-            clean_all_worktrees_and_volumes(&cli.branch_prefix, yes, force, &config.docker).await?;
+            clean_all_worktrees_and_volumes(
+                &cli.branch_prefix,
+                yes,
+                force,
+                &config.docker,
+                config.worktree.auto_clean_on_remove,
+            )
+            .await?;
         }
         Some(Commands::Mcp) => {
             mcp::run_mcp_server().await?;

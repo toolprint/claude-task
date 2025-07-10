@@ -1,3 +1,5 @@
+#![allow(deprecated)]
+
 use anyhow::Result;
 use rmcp::{
     handler::server::{router::tool::ToolRouter, tool::Parameters},
@@ -13,11 +15,7 @@ use tracing_subscriber::{self, EnvFilter};
 use claude_task::permission::ApprovalToolPermission;
 
 // Import internal functions from the main module
-use crate::{
-    check_worktree_status, clean_all_worktrees, clean_all_worktrees_and_volumes,
-    clean_shared_volumes, create_git_worktree, init_shared_volumes, remove_git_worktree,
-    run_claude_task, setup_credentials_and_config, TaskRunConfig,
-};
+use crate::{check_worktree_status, clean_all_worktrees, create_git_worktree, remove_git_worktree};
 
 #[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct GlobalOptions {
@@ -127,19 +125,16 @@ impl ClaudeTaskMcpServer {
         &self,
         Parameters(args): Parameters<SetupOptions>,
     ) -> Result<CallToolResult, McpError> {
-        let task_base_home_dir = args
-            .global_options
-            .task_base_home_dir
-            .unwrap_or_else(|| "~/.claude-task/home".to_string());
-        let debug = args.global_options.debug.unwrap_or(false);
+        // Use subprocess since we need claude user config which isn't available in MCP context
+        let mut cmd_args = vec!["setup".to_string()];
+        self.add_global_options(&mut cmd_args, &args.global_options);
 
-        setup_credentials_and_config(&task_base_home_dir, debug)
+        let output = self
+            .execute_claude_task_command(&cmd_args)
             .await
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
-        Ok(CallToolResult::success(vec![Content::text(
-            "Setup completed successfully".to_string(),
-        )]))
+        Ok(CallToolResult::success(vec![Content::text(output)]))
     }
 
     #[tool(description = "Create a git worktree for a task")]
@@ -195,7 +190,8 @@ impl ClaudeTaskMcpServer {
             .branch_prefix
             .unwrap_or_else(|| "claude-task/".to_string());
 
-        remove_git_worktree(&args.task_id, &branch_prefix)
+        // Use false for auto_clean_branch since we don't have config access in MCP
+        remove_git_worktree(&args.task_id, &branch_prefix, false)
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
         let output = format!("Cleanup complete for task '{}'", args.task_id);
@@ -214,7 +210,8 @@ impl ClaudeTaskMcpServer {
         let force = args.force.unwrap_or(false);
 
         // Always skip confirmation in MCP mode
-        clean_all_worktrees(&branch_prefix, true, force)
+        // Use false for auto_clean_branch since we don't have config access in MCP
+        clean_all_worktrees(&branch_prefix, true, force, false)
             .await
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
@@ -228,20 +225,19 @@ impl ClaudeTaskMcpServer {
         &self,
         Parameters(args): Parameters<InitDockerVolumeOptions>,
     ) -> Result<CallToolResult, McpError> {
-        let task_base_home_dir = args
-            .global_options
-            .task_base_home_dir
-            .unwrap_or_else(|| "~/.claude-task/home".to_string());
-        let debug = args.global_options.debug.unwrap_or(false);
-        let refresh_credentials = args.refresh_credentials.unwrap_or(false);
+        // Use subprocess since we need docker config which isn't available in MCP context
+        let mut cmd_args = vec!["docker".to_string(), "init".to_string()];
+        if args.refresh_credentials.unwrap_or(false) {
+            cmd_args.push("--refresh-credentials".to_string());
+        }
+        self.add_global_options(&mut cmd_args, &args.global_options);
 
-        init_shared_volumes(refresh_credentials, &task_base_home_dir, debug)
+        let output = self
+            .execute_claude_task_command(&cmd_args)
             .await
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
-        Ok(CallToolResult::success(vec![Content::text(
-            "All shared volumes are ready".to_string(),
-        )]))
+        Ok(CallToolResult::success(vec![Content::text(output)]))
     }
 
     #[tool(description = "List Docker volumes for Claude tasks")]
@@ -267,15 +263,16 @@ impl ClaudeTaskMcpServer {
         &self,
         Parameters(args): Parameters<CleanDockerVolumeOptions>,
     ) -> Result<CallToolResult, McpError> {
-        let debug = args.global_options.debug.unwrap_or(false);
+        // Use subprocess since we need docker config which isn't available in MCP context
+        let mut cmd_args = vec!["docker".to_string(), "clean".to_string()];
+        self.add_global_options(&mut cmd_args, &args.global_options);
 
-        clean_shared_volumes(debug)
+        let output = self
+            .execute_claude_task_command(&cmd_args)
             .await
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
-        Ok(CallToolResult::success(vec![Content::text(
-            "Shared volume cleanup completed".to_string(),
-        )]))
+        Ok(CallToolResult::success(vec![Content::text(output)]))
     }
 
     #[tool(description = "Run a Claude task in a local docker container")]
@@ -293,38 +290,43 @@ impl ClaudeTaskMcpServer {
             ));
         }
 
-        let worktree_base_dir = args
-            .global_options
-            .worktree_base_dir
-            .unwrap_or_else(|| "~/.claude-task/worktrees".to_string());
-        let task_base_home_dir = args
-            .global_options
-            .task_base_home_dir
-            .unwrap_or_else(|| "~/.claude-task/home".to_string());
+        // Use subprocess since we need docker config which isn't available in MCP context
+        let mut cmd_args = vec!["run".to_string(), args.prompt.clone()];
 
-        let config = TaskRunConfig {
-            prompt: &args.prompt,
-            task_id: args.task_id,
-            build: args.build.unwrap_or(false),
-            workspace_dir: args.workspace_dir,
-            approval_tool_permission: Some(args.approval_tool_permission),
-            debug: args.debug.unwrap_or(false),
-            mcp_config: args.mcp_config,
-            skip_confirmation: true, // Skip confirmation in MCP mode
-            worktree_base_dir: &worktree_base_dir,
-            task_base_home_dir: &task_base_home_dir,
-            open_editor: false, // Don't auto-open IDE in MCP mode
-            ht_mcp_port: None,  // HT-MCP port not supported via MCP interface
-            web_view_proxy_port: args.web_view_proxy_port.unwrap_or(4618),
-        };
+        if let Some(task_id) = args.task_id {
+            cmd_args.push("--task-id".to_string());
+            cmd_args.push(task_id);
+        }
+        if args.build.unwrap_or(false) {
+            cmd_args.push("--build".to_string());
+        }
+        if let Some(ws) = args.workspace_dir {
+            cmd_args.push("--workspace-dir".to_string());
+            if let Some(dir) = ws {
+                cmd_args.push(dir);
+            }
+        }
+        if !args.approval_tool_permission.is_empty() {
+            cmd_args.push("-a".to_string());
+            cmd_args.push(args.approval_tool_permission.clone());
+        }
+        if let Some(mcp) = args.mcp_config {
+            cmd_args.push("-c".to_string());
+            cmd_args.push(mcp);
+        }
+        cmd_args.push("--yes".to_string()); // Skip confirmation in MCP
+        if let Some(port) = args.web_view_proxy_port {
+            cmd_args.push("--web-view-proxy-port".to_string());
+            cmd_args.push(port.to_string());
+        }
+        self.add_global_options(&mut cmd_args, &args.global_options);
 
-        run_claude_task(config)
+        let output = self
+            .execute_claude_task_command(&cmd_args)
             .await
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
-        Ok(CallToolResult::success(vec![Content::text(
-            "Claude task completed successfully".to_string(),
-        )]))
+        Ok(CallToolResult::success(vec![Content::text(output)]))
     }
 
     #[tool(description = "Clean up both claude-task git worktrees and docker volumes")]
@@ -332,20 +334,22 @@ impl ClaudeTaskMcpServer {
         &self,
         Parameters(args): Parameters<CleanOptions>,
     ) -> Result<CallToolResult, McpError> {
-        let branch_prefix = args
-            .global_options
-            .branch_prefix
-            .unwrap_or_else(|| "claude-task/".to_string());
         let force = args.force.unwrap_or(false);
 
-        // Always skip confirmation since we're deferring to the permission tool to approve or reject
-        clean_all_worktrees_and_volumes(&branch_prefix, true, force)
+        // Use subprocess since we need docker config which isn't available in MCP context
+        let mut cmd_args = vec!["clean".to_string()];
+        if force {
+            cmd_args.push("--force".to_string());
+        }
+        cmd_args.push("--yes".to_string()); // Always skip confirmation in MCP
+        self.add_global_options(&mut cmd_args, &args.global_options);
+
+        let output = self
+            .execute_claude_task_command(&cmd_args)
             .await
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
-        Ok(CallToolResult::success(vec![Content::text(
-            "Cleanup completed successfully".to_string(),
-        )]))
+        Ok(CallToolResult::success(vec![Content::text(output)]))
     }
 
     #[tool(description = "Check git worktree status for uncommitted changes and unpushed commits")]

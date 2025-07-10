@@ -101,6 +101,9 @@ just run-ht-mcp-debug              # Same with debug output
 just run-ht-mcp port=8080          # Custom port
 just run-ht-mcp prompt="Custom task" port=3618  # Custom prompt and port
 
+# Configuration management
+claude-task config <command>  # or: claude-task cf <command>
+
 # Clean up resources
 claude-task clean  # or: claude-task c
 
@@ -326,7 +329,110 @@ claude-task/
 
 ## Configuration
 
+### Configuration File
+Claude Task supports persistent configuration through a JSON config file. By default, the config is stored at `~/.claude-task/config.json` and is automatically created on first run.
+
+#### Config Management Commands
+```bash
+# Create default config file
+claude-task config init  # or: ct config i
+
+# Force overwrite existing config
+claude-task config init --force
+
+# Edit config file in your editor
+claude-task config edit  # or: ct config e
+
+# Display current configuration
+claude-task config show  # or: ct config s
+
+# Display config as JSON
+claude-task config show --json
+
+# Validate config file
+claude-task config validate  # or: ct config v
+
+# Use custom config file location
+claude-task --config-path ~/my-config.json config show
+```
+
+#### Configuration Schema
+```json
+{
+  "version": "0.1.0",
+  "paths": {
+    "worktreeBaseDir": "~/.claude-task/worktrees",
+    "taskBaseHomeDir": "~/.claude-task/home",
+    "branchPrefix": "claude-task/"
+  },
+  "docker": {
+    "imageName": "claude-task:dev",
+    "volumePrefix": "claude-task-",
+    "volumes": {
+      "home": "claude-task-home",
+      "npmCache": "claude-task-npm-cache",
+      "nodeCache": "claude-task-node-cache"
+    },
+    "containerNamePrefix": "claude-task-",
+    "defaultWebViewProxyPort": 4618,
+    "defaultHtMcpPort": null,
+    "environmentVariables": {
+      "CLAUDE_CONFIG_DIR": "/home/node/.claude"
+    }
+  },
+  "claudeUserConfig": {
+    "configPath": "~/.claude.json",
+    "userMemoryPath": "~/.claude/CLAUDE.md"
+  },
+  "worktree": {
+    "defaultOpenCommand": null,
+    "autoCleanOnRemove": false
+  },
+  "globalOptionDefaults": {
+    "debug": false,
+    "openEditorAfterCreate": false,
+    "buildImageBeforeRun": false
+  }
+}
+```
+
+#### Configuration Options
+
+**Paths Configuration:**
+- `worktreeBaseDir` - Base directory for git worktrees
+- `taskBaseHomeDir` - Base directory for task home and setup files
+- `branchPrefix` - Prefix for git branches created by claude-task
+
+**Docker Configuration:**
+- `imageName` - Docker image name to use
+- `volumePrefix` - Prefix for Docker volume names
+- `volumes` - Specific volume names for home, npm cache, and node cache
+- `containerNamePrefix` - Prefix for container names
+- `defaultWebViewProxyPort` - Default port for web view proxy
+- `defaultHtMcpPort` - Default port for HT-MCP (null means no default)
+- `environmentVariables` - Additional environment variables to set in container
+
+**Claude User Configuration:**
+- `configPath` - Path to Claude configuration file (typically ~/.claude.json)
+- `userMemoryPath` - Path to user memory/instructions file (CLAUDE.md)
+
+**Worktree Configuration:**
+- `defaultOpenCommand` - Custom command to open worktrees (e.g., "code", "cursor", "zed")
+- `autoCleanOnRemove` - Automatically clean branches when removing worktrees
+
+**Global Option Defaults:**
+- `debug` - Default debug mode setting
+- `openEditorAfterCreate` - Default for -e/--open-editor flag
+- `buildImageBeforeRun` - Default for --build flag
+
+#### Configuration Precedence
+Configuration values are applied in the following order (highest precedence first):
+1. Command-line arguments
+2. Configuration file
+3. Built-in defaults
+
 ### Default Locations
+- Config file: `~/.claude-task/config.json`
 - Worktrees: `~/.claude-task/worktrees/`
 - Task home directories: `~/.claude-task/home/`
 - Branch prefix: `claude-task/`

@@ -11,8 +11,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 include!(concat!(env!("OUT_DIR"), "/mcp_help.rs"));
 
 mod assets;
+mod config;
 mod credentials;
 mod docker;
+mod handle_config;
 mod mcp;
 pub mod permission;
 
@@ -33,10 +35,18 @@ struct TaskRunConfig<'a> {
     open_editor: bool,
     ht_mcp_port: Option<u16>,
     web_view_proxy_port: u16,
+    docker_config: &'a config::DockerConfig,
+    claude_user_config: &'a config::ClaudeUserConfig,
+    worktree_config: &'a config::WorktreeConfig,
 }
 
-use credentials::setup_credentials_and_config;
+use config::Config;
+use credentials::{
+    check_credential_freshness, setup_credentials_and_config,
+    setup_credentials_and_config_with_cache,
+};
 use docker::{ClaudeTaskConfig, DockerManager};
+use handle_config::handle_config_command;
 
 #[derive(Subcommand)]
 enum WorktreeCommands {
@@ -87,6 +97,30 @@ enum DockerCommands {
     Clean,
 }
 
+#[derive(Subcommand)]
+enum ConfigCommands {
+    /// Create default config file
+    #[command(visible_alias = "i")]
+    Init {
+        /// Force overwrite if config already exists
+        #[arg(long, short)]
+        force: bool,
+    },
+    /// Open config file in editor
+    #[command(visible_alias = "e")]
+    Edit,
+    /// Display current configuration
+    #[command(visible_alias = "s")]
+    Show {
+        /// Show config in JSON format (default: pretty print)
+        #[arg(long)]
+        json: bool,
+    },
+    /// Check config file validity
+    #[command(visible_alias = "v")]
+    Validate,
+}
+
 #[derive(Parser)]
 #[command(name = "claude-task")]
 #[command(about = "Claude Task Management CLI")]
@@ -106,6 +140,10 @@ struct Cli {
     /// Enable debug mode
     #[arg(short = 'd', long, global = true)]
     debug: bool,
+
+    /// Path to the configuration file (defaults to ~/.claude-task/config.json)
+    #[arg(long, global = true, value_name = "PATH", help = "Path to config file")]
+    config_path: Option<PathBuf>,
 
     #[command(subcommand)]
     command: Option<Commands>,
@@ -170,6 +208,12 @@ enum Commands {
         /// Force removal of worktrees even if they have uncommitted changes
         #[arg(long, short = 'f')]
         force: bool,
+    },
+    /// Configuration management commands
+    #[command(visible_alias = "cf")]
+    Config {
+        #[command(subcommand)]
+        command: ConfigCommands,
     },
     /// Launch MCP server on stdio
     #[command(after_help = MCP_HELP_TEXT)]
@@ -521,7 +565,7 @@ fn print_worktree_info(path: &str, head: &str, branch: &str) {
     println!();
 }
 
-fn remove_git_worktree(task_id: &str, branch_prefix: &str) -> Result<()> {
+fn remove_git_worktree(task_id: &str, branch_prefix: &str, auto_clean_branch: bool) -> Result<()> {
     let current_dir = std::env::current_dir().context("Could not get current directory")?;
     let repo_root = find_git_repo_root(&current_dir)?;
 
@@ -600,20 +644,24 @@ fn remove_git_worktree(task_id: &str, branch_prefix: &str) -> Result<()> {
 
     println!("✓ Worktree removed: {worktree_path}");
 
-    // Delete the branch
-    println!("Deleting branch '{branch_name}'...");
-    let output = Command::new("git")
-        .args(["branch", "-D", &branch_name])
-        .current_dir(&repo_root)
-        .output()
-        .context("Failed to execute git branch delete command")?;
+    // Delete the branch if auto_clean_branch is enabled
+    if auto_clean_branch {
+        println!("Deleting branch '{branch_name}'...");
+        let output = Command::new("git")
+            .args(["branch", "-D", &branch_name])
+            .current_dir(&repo_root)
+            .output()
+            .context("Failed to execute git branch delete command")?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        println!("⚠️  Warning: Failed to delete branch '{branch_name}': {stderr}");
-        println!("   You may need to delete it manually with: git branch -D {branch_name}");
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            println!("⚠️  Warning: Failed to delete branch '{branch_name}': {stderr}");
+            println!("   You may need to delete it manually with: git branch -D {branch_name}");
+        } else {
+            println!("✓ Branch deleted: {branch_name}");
+        }
     } else {
-        println!("✓ Branch deleted: {branch_name}");
+        println!("ℹ️  Branch '{branch_name}' was kept (auto clean disabled)");
     }
 
     println!();
@@ -626,6 +674,8 @@ async fn init_shared_volumes(
     refresh_credentials: bool,
     task_base_home_dir: &str,
     debug: bool,
+    docker_config: &config::DockerConfig,
+    claude_user_config: &config::ClaudeUserConfig,
 ) -> Result<()> {
     println!("Initializing shared Docker volumes for Claude tasks...");
     if debug {
@@ -635,7 +685,8 @@ async fn init_shared_volumes(
     println!();
 
     // Create Docker manager
-    let docker_manager = DockerManager::new().context("Failed to create Docker manager")?;
+    let docker_manager =
+        DockerManager::new(docker_config.clone()).context("Failed to create Docker manager")?;
 
     // Create cache volumes (npm and node)
     println!("Creating cache volumes...");
@@ -645,14 +696,23 @@ async fn init_shared_volumes(
     // Run setup if requested
     if refresh_credentials {
         println!("Refreshing credentials...");
-        setup_credentials_and_config(task_base_home_dir, debug).await?;
+        setup_credentials_and_config(task_base_home_dir, debug, claude_user_config).await?;
     }
 
     println!();
     println!("✅ All shared volumes are ready:");
-    println!("   - claude-task-home (credentials and config)");
-    println!("   - claude-task-npm-cache (shared npm cache)");
-    println!("   - claude-task-node-cache (shared node cache)");
+    println!(
+        "   - {} (credentials and config)",
+        docker_config.volumes.home
+    );
+    println!(
+        "   - {} (shared npm cache)",
+        docker_config.volumes.npm_cache
+    );
+    println!(
+        "   - {} (shared node cache)",
+        docker_config.volumes.node_cache
+    );
 
     Ok(())
 }
@@ -695,7 +755,48 @@ fn open_ide_in_path(path: &str, ide: &str) -> Result<()> {
     Ok(())
 }
 
-fn select_worktree_interactively(branch_prefix: &str) -> Result<()> {
+fn open_worktree(path: &str, default_open_command: Option<&str>) -> Result<()> {
+    if let Some(cmd) = default_open_command {
+        // Parse the command and arguments
+        let parts: Vec<&str> = cmd.split_whitespace().collect();
+        if parts.is_empty() {
+            return Err(anyhow::anyhow!("Empty open command"));
+        }
+
+        println!("🚀 Opening with custom command: {cmd} {path}");
+
+        let mut command = Command::new(parts[0]);
+        for arg in &parts[1..] {
+            command.arg(arg);
+        }
+        command.arg(path);
+
+        let output = command
+            .output()
+            .with_context(|| format!("Failed to execute custom command: {}", parts[0]))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(anyhow::anyhow!(
+                "Failed to open {} with {}: {}",
+                path,
+                cmd,
+                stderr
+            ));
+        }
+
+        println!("✓ Opened successfully");
+        Ok(())
+    } else {
+        // Default to cursor
+        open_ide_in_path(path, "cursor")
+    }
+}
+
+fn select_worktree_interactively(
+    branch_prefix: &str,
+    default_open_command: Option<&str>,
+) -> Result<()> {
     println!("🌿 Finding available worktrees...");
     let worktrees = get_matching_worktrees(branch_prefix)?;
 
@@ -754,7 +855,7 @@ fn select_worktree_interactively(branch_prefix: &str) -> Result<()> {
     let worktree_path = &selected_worktree.0;
 
     println!("Selected: {}", options[selection]);
-    open_ide_in_path(worktree_path, "cursor")?;
+    open_worktree(worktree_path, default_open_command)?;
 
     Ok(())
 }
@@ -904,7 +1005,10 @@ async fn run_claude_task(config: TaskRunConfig<'_>) -> Result<()> {
 
             // Open IDE if requested
             if config.open_editor {
-                if let Err(e) = open_ide_in_path(&worktree_path.to_string_lossy(), "cursor") {
+                if let Err(e) = open_worktree(
+                    &worktree_path.to_string_lossy(),
+                    config.worktree_config.default_open_command.as_deref(),
+                ) {
                     println!("⚠️  Warning: Failed to open IDE: {e}");
                     println!("   Continuing with task execution...");
                 }
@@ -916,11 +1020,15 @@ async fn run_claude_task(config: TaskRunConfig<'_>) -> Result<()> {
     println!();
 
     // Create Docker manager
-    let docker_manager = DockerManager::new().context("Failed to create Docker manager")?;
+    let docker_manager = DockerManager::new(config.docker_config.clone())
+        .context("Failed to create Docker manager")?;
 
-    // Check if claude-task-home volume exists, run setup if it doesn't
+    // Check if home volume exists, run setup if it doesn't
     if config.debug {
-        println!("🔍 Checking if claude-task-home volume exists...");
+        println!(
+            "🔍 Checking if {} volume exists...",
+            config.docker_config.volumes.home
+        );
     }
     let home_volume_exists = docker_manager.check_home_volume_exists().await?;
     if config.debug {
@@ -928,11 +1036,47 @@ async fn run_claude_task(config: TaskRunConfig<'_>) -> Result<()> {
     }
 
     if !home_volume_exists {
-        println!("🔧 claude-task-home volume not found, running setup...");
-        setup_credentials_and_config(config.task_base_home_dir, config.debug).await?;
+        println!(
+            "🔧 {} volume not found, running setup...",
+            config.docker_config.volumes.home
+        );
+        setup_credentials_and_config(
+            config.task_base_home_dir,
+            config.debug,
+            config.claude_user_config,
+        )
+        .await?;
         println!();
-    } else if config.debug {
-        println!("✓ claude-task-home volume found");
+    } else {
+        // Volume exists, check if credentials need refreshing
+        if config.debug {
+            println!("✓ {} volume found", config.docker_config.volumes.home);
+            println!("🔍 Checking credential freshness...");
+        }
+
+        let credentials_need_refresh = check_credential_freshness(config.task_base_home_dir)
+            .await
+            .unwrap_or_else(|e| {
+                if config.debug {
+                    println!("⚠️  Warning: Could not check credential freshness: {e}");
+                    println!("   Assuming credentials need refresh for safety");
+                }
+                true
+            });
+
+        if credentials_need_refresh {
+            println!("🔄 Credentials have changed, refreshing...");
+            setup_credentials_and_config_with_cache(
+                config.task_base_home_dir,
+                config.debug,
+                config.claude_user_config,
+                true,
+            )
+            .await?;
+            println!();
+        } else if config.debug {
+            println!("✓ Credentials are up to date, skipping refresh");
+        }
     }
 
     // Create task configuration
@@ -995,18 +1139,25 @@ async fn run_claude_task(config: TaskRunConfig<'_>) -> Result<()> {
     } else {
         // Check if the image exists, if not suggest using --build
         if docker_manager
-            .check_image_exists("claude-task:dev")
+            .check_image_exists(&config.docker_config.image_name)
             .await
             .is_err()
         {
-            println!("⚠️  Image 'claude-task:dev' not found.");
+            println!("⚠️  Image '{}' not found.", config.docker_config.image_name);
             println!("   Use '--build' flag to build the image first, or build it manually:");
-            println!("   docker build -t claude-task:dev ./claude-task/");
+            println!(
+                "   docker build -t {} ./claude-task/",
+                config.docker_config.image_name
+            );
             return Err(anyhow::anyhow!(
-                "Image 'claude-task:dev' not found. Use --build flag to build it."
+                "Image '{}' not found. Use --build flag to build it.",
+                config.docker_config.image_name
             ));
         }
-        println!("✓ Using existing image: claude-task:dev");
+        println!(
+            "✓ Using existing image: {}",
+            config.docker_config.image_name
+        );
     }
 
     // Run Claude task
@@ -1022,15 +1173,16 @@ async fn run_claude_task(config: TaskRunConfig<'_>) -> Result<()> {
         .await?;
 
     println!("   Task ID: {task_id}");
-    println!("   Shared volume: claude-task-home");
+    println!("   Shared volume: {}", config.docker_config.volumes.home);
 
     Ok(())
 }
 
-async fn list_docker_volumes() -> Result<()> {
+async fn list_docker_volumes(docker_config: &config::DockerConfig) -> Result<()> {
     println!("📦 Listing Claude task Docker volumes...");
 
-    let docker_manager = DockerManager::new().context("Failed to create Docker manager")?;
+    let docker_manager =
+        DockerManager::new(docker_config.clone()).context("Failed to create Docker manager")?;
 
     let volumes = docker_manager.list_claude_volumes().await?;
 
@@ -1046,7 +1198,7 @@ async fn list_docker_volumes() -> Result<()> {
     Ok(())
 }
 
-async fn clean_shared_volumes(debug: bool) -> Result<()> {
+async fn clean_shared_volumes(debug: bool, docker_config: &config::DockerConfig) -> Result<()> {
     println!("🧹 Cleaning all shared Docker volumes...");
     if debug {
         println!("🔍 Will remove all three shared volumes");
@@ -1054,9 +1206,9 @@ async fn clean_shared_volumes(debug: bool) -> Result<()> {
     println!();
 
     let volume_names = vec![
-        "claude-task-home",
-        "claude-task-npm-cache",
-        "claude-task-node-cache",
+        &docker_config.volumes.home,
+        &docker_config.volumes.npm_cache,
+        &docker_config.volumes.node_cache,
     ];
 
     for volume_name in &volume_names {
@@ -1088,6 +1240,7 @@ async fn clean_all_worktrees(
     branch_prefix: &str,
     skip_confirmation: bool,
     force: bool,
+    auto_clean_branch: bool,
 ) -> Result<()> {
     println!("🧹 Finding all worktrees to clean up...");
     println!("Branch prefix: '{branch_prefix}'");
@@ -1264,7 +1417,7 @@ async fn clean_all_worktrees(
                     );
 
                     // Remove worktree (this will also delete the branch)
-                    if let Err(e) = remove_git_worktree(task_id, branch_prefix) {
+                    if let Err(e) = remove_git_worktree(task_id, branch_prefix, auto_clean_branch) {
                         println!("⚠️  Failed to remove worktree for '{task_id}': {e}");
                     } else {
                         println!("✓ Worktree removed for task '{task_id}'");
@@ -1301,19 +1454,21 @@ async fn clean_all_worktrees_and_volumes(
     branch_prefix: &str,
     skip_confirmation: bool,
     force: bool,
+    docker_config: &config::DockerConfig,
+    auto_clean_branch: bool,
 ) -> Result<()> {
     println!("🧹 Cleaning up both worktrees and volumes...");
     println!();
 
     // Clean worktrees first
-    clean_all_worktrees(branch_prefix, skip_confirmation, force).await?;
+    clean_all_worktrees(branch_prefix, skip_confirmation, force, auto_clean_branch).await?;
 
     println!();
     println!("🐋 Now cleaning Docker volumes...");
     println!();
 
     // Then clean volumes
-    clean_shared_volumes(false).await?;
+    clean_shared_volumes(false, docker_config).await?;
 
     println!();
     println!("✅ Complete cleanup finished!");
@@ -1806,11 +1961,53 @@ pub fn check_worktree_status(worktree_path: &Path) -> Result<WorktreeStatus> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
+
+    // Special handling for config init command - don't load config first
+    if let Some(Commands::Config {
+        command: ConfigCommands::Init { .. },
+    }) = &cli.command
+    {
+        return handle_config_command(
+            ConfigCommands::Init {
+                force: matches!(
+                    &cli.command,
+                    Some(Commands::Config {
+                        command: ConfigCommands::Init { force: true }
+                    })
+                ),
+            },
+            cli.config_path.as_ref(),
+        )
+        .await;
+    }
+
+    // Load config file
+    let config = Config::load(cli.config_path.as_ref())?;
+
+    // Apply config values to CLI args if they're using defaults
+    // (CLI args always take precedence over config values)
+    if cli.worktree_base_dir == "~/.claude-task/worktrees" {
+        cli.worktree_base_dir = config.paths.worktree_base_dir.clone();
+    }
+    if cli.branch_prefix == "claude-task/" {
+        cli.branch_prefix = config.paths.branch_prefix.clone();
+    }
+    if cli.task_base_home_dir == "~/.claude-task/home" {
+        cli.task_base_home_dir = config.paths.task_base_home_dir.clone();
+    }
+    if !cli.debug {
+        cli.debug = config.global_option_defaults.debug;
+    }
 
     match cli.command {
         Some(Commands::Setup) => {
-            setup_credentials_and_config(&cli.task_base_home_dir, cli.debug).await?;
+            setup_credentials_and_config(
+                &cli.task_base_home_dir,
+                cli.debug,
+                &config.claude_user_config,
+            )
+            .await?;
         }
         Some(Commands::Worktree { command }) => match command {
             WorktreeCommands::Create { task_id } => {
@@ -1821,27 +2018,46 @@ async fn main() -> Result<()> {
                 list_git_worktrees(&cli.branch_prefix)?;
             }
             WorktreeCommands::Remove { task_id } => {
-                remove_git_worktree(&task_id, &cli.branch_prefix)?;
+                remove_git_worktree(
+                    &task_id,
+                    &cli.branch_prefix,
+                    config.worktree.auto_clean_on_remove,
+                )?;
             }
             WorktreeCommands::Open => {
-                select_worktree_interactively(&cli.branch_prefix)?;
+                select_worktree_interactively(
+                    &cli.branch_prefix,
+                    config.worktree.default_open_command.as_deref(),
+                )?;
             }
             WorktreeCommands::Clean { yes, force } => {
-                clean_all_worktrees(&cli.branch_prefix, yes, force).await?;
+                clean_all_worktrees(
+                    &cli.branch_prefix,
+                    yes,
+                    force,
+                    config.worktree.auto_clean_on_remove,
+                )
+                .await?;
             }
         },
         Some(Commands::Docker { command }) => match command {
             DockerCommands::Init {
                 refresh_credentials,
             } => {
-                init_shared_volumes(refresh_credentials, &cli.task_base_home_dir, cli.debug)
-                    .await?;
+                init_shared_volumes(
+                    refresh_credentials,
+                    &cli.task_base_home_dir,
+                    cli.debug,
+                    &config.docker,
+                    &config.claude_user_config,
+                )
+                .await?;
             }
             DockerCommands::List => {
-                list_docker_volumes().await?;
+                list_docker_volumes(&config.docker).await?;
             }
             DockerCommands::Clean => {
-                clean_shared_volumes(cli.debug).await?;
+                clean_shared_volumes(cli.debug, &config.docker).await?;
             }
         },
         Some(Commands::Run {
@@ -1857,7 +2073,7 @@ async fn main() -> Result<()> {
             web_view_proxy_port,
         }) => {
             let debug_mode = cli.debug; // Use global debug flag
-            let config = TaskRunConfig {
+            let task_config = TaskRunConfig {
                 prompt: &prompt,
                 task_id,
                 build,
@@ -1871,11 +2087,24 @@ async fn main() -> Result<()> {
                 open_editor,
                 ht_mcp_port,
                 web_view_proxy_port,
+                docker_config: &config.docker,
+                claude_user_config: &config.claude_user_config,
+                worktree_config: &config.worktree,
             };
-            run_claude_task(config).await?;
+            run_claude_task(task_config).await?;
         }
         Some(Commands::Clean { yes, force }) => {
-            clean_all_worktrees_and_volumes(&cli.branch_prefix, yes, force).await?;
+            clean_all_worktrees_and_volumes(
+                &cli.branch_prefix,
+                yes,
+                force,
+                &config.docker,
+                config.worktree.auto_clean_on_remove,
+            )
+            .await?;
+        }
+        Some(Commands::Config { command }) => {
+            handle_config_command(command, cli.config_path.as_ref()).await?;
         }
         Some(Commands::Mcp) => {
             mcp::run_mcp_server().await?;

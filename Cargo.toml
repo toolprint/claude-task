@@ -9,8 +9,9 @@ name = "claude-task"
 path = "src/main.rs"
 
 [dependencies]
-keyring = "2.3"
+keyring = "2.3"  # Keep for cross-platform support (Windows, Linux)
 localauthentication-rs = { git = "https://github.com/caoimhebyrne/localauthentication-rs.git" }
+security-framework = "2.9"  # Native macOS Security framework for proper keychain access
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 anyhow = "1.0"
@@ -25,7 +26,11 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 schemars = "0.8"
 dialoguer = "0.11"
+dirs = "6.0.0"
 
 [build-dependencies]
 syn = { version = "2.0", features = ["full", "extra-traits", "parsing"] }
 quote = "1.0"
+
+[dev-dependencies]
+tempfile = "3.20.0"

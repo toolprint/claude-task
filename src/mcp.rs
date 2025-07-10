@@ -89,6 +89,7 @@ pub struct RunTaskOptions {
     pub debug: Option<bool>,
     pub mcp_config: Option<String>,
     pub web_view_proxy_port: Option<u16>,
+    pub ht_mcp_port: Option<u16>,
 }
 
 #[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
@@ -317,6 +318,10 @@ impl ClaudeTaskMcpServer {
         cmd_args.push("--yes".to_string()); // Skip confirmation in MCP
         if let Some(port) = args.web_view_proxy_port {
             cmd_args.push("--web-view-proxy-port".to_string());
+            cmd_args.push(port.to_string());
+        }
+        if let Some(port) = args.ht_mcp_port {
+            cmd_args.push("--ht-mcp-port".to_string());
             cmd_args.push(port.to_string());
         }
         self.add_global_options(&mut cmd_args, &args.global_options);

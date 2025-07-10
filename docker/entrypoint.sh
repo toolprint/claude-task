@@ -18,25 +18,34 @@ echo "" >&2
 echo "Setting up environment..." >&2
 cp -r /home/base/. /home/node/ 2>/dev/null || true
 
-# Validate HT-MCP binary
-echo "=== Validating HT-MCP binary ===" >&2
+# Check HT-MCP binary availability
+echo "=== Checking HT-MCP binary availability ===" >&2
+HT_MCP_AVAILABLE=false
+
 if command -v ht-mcp >/dev/null 2>&1; then
     echo "✓ HT-MCP found at: $(which ht-mcp)"
     # TODO: Switch to --version when HT-MCP adds version support
-    ht-mcp -h >/dev/null 2>&1 && echo "✓ HT-MCP help accessible" || echo "⚠️ HT-MCP help check failed"
-else
-    echo "✗ HT-MCP binary not found in PATH"
-    echo "Checking /usr/local/bin/ht-mcp directly..."
-    if [ -f /usr/local/bin/ht-mcp ]; then
-        echo "Found binary at /usr/local/bin/ht-mcp"
-        ls -la /usr/local/bin/ht-mcp
-        # Try to run it directly
-        # TODO: Switch to --version when HT-MCP adds version support
-        /usr/local/bin/ht-mcp -h >/dev/null 2>&1 && echo "✓ HT-MCP help accessible" || echo "Binary exists but won't execute"
+    if ht-mcp -h >/dev/null 2>&1; then
+        echo "✓ HT-MCP help accessible"
+        HT_MCP_AVAILABLE=true
     else
-        echo "Binary not found at /usr/local/bin/ht-mcp"
+        echo "⚠️ HT-MCP help check failed"
     fi
-    exit 1
+elif [ -f /usr/local/bin/ht-mcp ]; then
+    echo "Found binary at /usr/local/bin/ht-mcp"
+    ls -la /usr/local/bin/ht-mcp
+    # Try to run it directly
+    # TODO: Switch to --version when HT-MCP adds version support
+    if /usr/local/bin/ht-mcp -h >/dev/null 2>&1; then
+        echo "✓ HT-MCP help accessible"
+        HT_MCP_AVAILABLE=true
+    else
+        echo "⚠️ Binary exists but won't execute"
+    fi
+else
+    echo "ℹ️ HT-MCP binary not found - this is optional"
+    echo "   HT-MCP provides enhanced terminal monitoring through a web interface"
+    echo "   Tasks can still run normally without it"
 fi
 
 # Configure MCP servers
@@ -44,15 +53,28 @@ echo -e "\n=== Configuring MCP servers ==="
 echo "Adding CCO approval server..."
 claude mcp add-json -s user cco "{\"type\":\"http\",\"url\":\"$CCO_MCP_URL\"}" || echo "⚠️ Failed to add CCO server"
 
-echo "Adding HT-MCP server..."
-claude mcp add-json -s user ht-mcp '{"command":"ht-mcp","args":["--debug"]}' || echo "⚠️ Failed to add HT-MCP server"
+if [ "$HT_MCP_AVAILABLE" = "true" ]; then
+    echo "Adding HT-MCP server..."
+    claude mcp add-json -s user ht-mcp '{"command":"ht-mcp","args":["--debug"]}' || echo "⚠️ Failed to add HT-MCP server"
+else
+    echo "ℹ️ Skipping HT-MCP server registration - binary not available"
+fi
 
 # Validate MCP configuration
 echo -e "\n=== Validating MCP configuration ==="
 claude mcp list || echo "⚠️ Failed to list MCP servers"
 
-echo -e "\n=== Starting HT-MCP web proxy ==="
-echo "Setting up nginx proxy: 0.0.0.0:4618 -> 127.0.0.1:3618"
+if [ "$HT_MCP_AVAILABLE" = "true" ]; then
+    echo -e "\n=== Starting HT-MCP web proxy ==="
+    echo "Setting up nginx proxy: 0.0.0.0:4618 -> 127.0.0.1:3618"
+else
+    echo -e "\n=== Skipping HT-MCP web proxy setup ==="
+    echo "ℹ️ HT-MCP not available - skipping nginx proxy setup"
+    echo "   Claude Code will use built-in tools instead of HT-MCP"
+    echo ""
+    echo "=== Ready to run command ==="
+    exec "$@"
+fi
 
 # Check if nginx proxy port is already in use
 echo "Checking if port 4618 is available..."

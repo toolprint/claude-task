@@ -256,7 +256,8 @@ fn test_config_cli_args_override() -> Result<()> {
         "globalOptionDefaults": {
             "debug": true,
             "openEditorAfterCreate": false,
-            "buildImageBeforeRun": false
+            "buildImageBeforeRun": false,
+            "requireHtMcp": false
         }
     }"#;
 

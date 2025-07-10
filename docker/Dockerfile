@@ -8,18 +8,56 @@ ENV TZ="$TZ"
 # AMD64 stage
 FROM build-linux-amd64 AS base-amd64
 ARG TARGETARCH=amd64
-COPY docker/ht-mcp-release/latest/ht-mcp-linux-x86_64 /usr/local/bin/ht-mcp
-RUN chmod +x /usr/local/bin/ht-mcp && \
-    file /usr/local/bin/ht-mcp && \
-    ldd /usr/local/bin/ht-mcp || echo "Binary is statically linked or incompatible"
+ARG INCLUDE_HT_MCP=false
+
+# Always copy the ht-mcp-release directory (contains .gitkeep when empty)
+COPY docker/ht-mcp-release/ /tmp/ht-mcp-source/
+
+# Install ht-mcp if requested and binary is available
+RUN if [ "$INCLUDE_HT_MCP" = "true" ]; then \
+      if [ -f "/tmp/ht-mcp-source/latest/ht-mcp-linux-x86_64" ]; then \
+        echo "Installing ht-mcp for AMD64..." && \
+        cp /tmp/ht-mcp-source/latest/ht-mcp-linux-x86_64 /usr/local/bin/ht-mcp && \
+        chmod +x /usr/local/bin/ht-mcp && \
+        file /usr/local/bin/ht-mcp && \
+        (ldd /usr/local/bin/ht-mcp || echo "Binary is statically linked or incompatible") && \
+        echo "ht-mcp binary installed successfully for AMD64"; \
+      else \
+        echo "ERROR: INCLUDE_HT_MCP=true but ht-mcp binary not found!"; \
+        echo "Please run 'just prepare-docker-with-ht-mcp' first"; \
+        exit 1; \
+      fi; \
+    else \
+      echo "Skipping ht-mcp installation (INCLUDE_HT_MCP=$INCLUDE_HT_MCP)"; \
+    fi && \
+    rm -rf /tmp/ht-mcp-source
 
 # ARM64 stage  
 FROM build-linux-arm64 AS base-arm64
 ARG TARGETARCH=arm64
-COPY docker/ht-mcp-release/latest/ht-mcp-linux-aarch64 /usr/local/bin/ht-mcp
-RUN chmod +x /usr/local/bin/ht-mcp && \
-    file /usr/local/bin/ht-mcp && \
-    ldd /usr/local/bin/ht-mcp || echo "Binary is statically linked or incompatible"
+ARG INCLUDE_HT_MCP=false
+
+# Always copy the ht-mcp-release directory (contains .gitkeep when empty)
+COPY docker/ht-mcp-release/ /tmp/ht-mcp-source/
+
+# Install ht-mcp if requested and binary is available
+RUN if [ "$INCLUDE_HT_MCP" = "true" ]; then \
+      if [ -f "/tmp/ht-mcp-source/latest/ht-mcp-linux-aarch64" ]; then \
+        echo "Installing ht-mcp for ARM64..." && \
+        cp /tmp/ht-mcp-source/latest/ht-mcp-linux-aarch64 /usr/local/bin/ht-mcp && \
+        chmod +x /usr/local/bin/ht-mcp && \
+        file /usr/local/bin/ht-mcp && \
+        (ldd /usr/local/bin/ht-mcp || echo "Binary is statically linked or incompatible") && \
+        echo "ht-mcp binary installed successfully for ARM64"; \
+      else \
+        echo "ERROR: INCLUDE_HT_MCP=true but ht-mcp binary not found!"; \
+        echo "Please run 'just prepare-docker-with-ht-mcp' first"; \
+        exit 1; \
+      fi; \
+    else \
+      echo "Skipping ht-mcp installation (INCLUDE_HT_MCP=$INCLUDE_HT_MCP)"; \
+    fi && \
+    rm -rf /tmp/ht-mcp-source
 
 # Final stage
 FROM base-${TARGETARCH} AS base

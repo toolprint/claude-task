@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -62,6 +63,7 @@ pub struct GlobalOptionDefaults {
     pub debug: bool,
     pub open_editor_after_create: bool,
     pub build_image_before_run: bool,
+    pub require_ht_mcp: bool,
 }
 
 impl Default for Config {
@@ -105,6 +107,7 @@ impl Default for Config {
                 debug: false,
                 open_editor_after_create: false,
                 build_image_before_run: false,
+                require_ht_mcp: false,
             },
         }
     }
@@ -192,6 +195,26 @@ impl Config {
         Ok(())
     }
 
+    /// Check if ht-mcp binary is available in the system
+    pub fn check_ht_mcp_availability() -> bool {
+        // Try common installation paths and system PATH
+        let ht_mcp_paths = [
+            "ht-mcp",                                // System PATH
+            "/usr/local/bin/ht-mcp",                 // Common installation location
+            "/usr/bin/ht-mcp",                       // System binary location
+            "/opt/homebrew/bin/ht-mcp",              // Homebrew on Apple Silicon
+            "/home/linuxbrew/.linuxbrew/bin/ht-mcp", // Linuxbrew
+        ];
+
+        for path in &ht_mcp_paths {
+            if Command::new(path).arg("--version").output().is_ok() {
+                return true;
+            }
+        }
+
+        false
+    }
+
     pub fn validate(&self) -> Result<()> {
         // Validate version
         if self.version.is_empty() {
@@ -242,6 +265,13 @@ impl Config {
         }
         if self.claude_user_config.user_memory_path.is_empty() {
             anyhow::bail!("claudeUserConfig.userMemoryPath cannot be empty");
+        }
+
+        // Validate ht-mcp availability if required
+        if self.global_option_defaults.require_ht_mcp && !Self::check_ht_mcp_availability() {
+            anyhow::bail!(
+                "ht-mcp binary is required but not found. Please install ht-mcp or set 'requireHtMcp' to false in config."
+            );
         }
 
         Ok(())

@@ -30,7 +30,7 @@ pub struct DockerConfig {
     pub volume_prefix: String,
     pub volumes: DockerVolumes,
     pub container_name_prefix: String,
-    pub default_web_view_proxy_port: u16,
+    pub default_web_view_proxy_port: Option<u16>,
     pub default_ht_mcp_port: Option<u16>,
     pub environment_variables: HashMap<String, String>,
 }
@@ -84,7 +84,7 @@ impl Default for Config {
                     node_cache: "claude-task-node-cache".to_string(),
                 },
                 container_name_prefix: "claude-task-".to_string(),
-                default_web_view_proxy_port: 4618,
+                default_web_view_proxy_port: None,
                 default_ht_mcp_port: None,
                 environment_variables: {
                     let mut env = HashMap::new();
@@ -254,9 +254,11 @@ impl Config {
             anyhow::bail!("Docker volumes.nodeCache cannot be empty");
         }
 
-        // Validate port
-        if self.docker.default_web_view_proxy_port == 0 {
-            anyhow::bail!("defaultWebViewProxyPort must be greater than 0");
+        // Validate port if specified
+        if let Some(port) = self.docker.default_web_view_proxy_port {
+            if port == 0 {
+                anyhow::bail!("defaultWebViewProxyPort must be greater than 0 or null");
+            }
         }
 
         // Validate Claude user config

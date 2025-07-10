@@ -11,7 +11,6 @@ use security_framework::passwords::get_generic_password;
 /// Trait for cross-platform credential access
 trait CredentialAccess {
     async fn extract_credentials(&self) -> Result<String>;
-    async fn get_credential_modification_time(&self) -> Result<Option<std::time::SystemTime>>;
 }
 
 /// macOS-specific credential access using Security framework
@@ -98,35 +97,6 @@ pub async fn extract_keychain_credentials() -> Result<String> {
     }
 }
 
-/// Check if credentials have been modified since last sync
-pub async fn check_credential_freshness(cache_path: &str) -> Result<bool> {
-    let username = get_current_username()?;
-
-    #[cfg(target_os = "macos")]
-    {
-        let access = MacOSCredentialAccess {
-            service_name: "Claude Code-credentials".to_string(),
-            account_name: username,
-        };
-
-        // Get current credential modification time
-        let current_mod_time = access.get_credential_modification_time().await?;
-
-        // Read cached modification time
-        let cached_mod_time = read_cached_modification_time(cache_path)?;
-
-        // Compare times to determine if refresh is needed
-        Ok(current_mod_time != cached_mod_time)
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    {
-        // For other platforms, always refresh for now
-        // TODO: Implement change detection for other platforms
-        Ok(true)
-    }
-}
-
 #[cfg(target_os = "macos")]
 async fn request_biometric_authentication() -> Result<()> {
     use localauthentication_rs::{LAPolicy, LocalAuthentication};
@@ -195,7 +165,7 @@ pub async fn setup_credentials_and_config_with_cache(
     task_base_home_dir: &str,
     debug: bool,
     claude_user_config: &crate::config::ClaudeUserConfig,
-    update_cache: bool,
+    _update_cache: bool,
 ) -> Result<()> {
     println!("Setting up Claude configuration...");
 
@@ -224,12 +194,7 @@ pub async fn setup_credentials_and_config_with_cache(
 
     println!("✓ Keychain credentials extracted to {credentials_path}");
 
-    // Update credential cache if requested
-    if update_cache {
-        if let Err(e) = update_credential_cache(&base_dir).await {
-            println!("⚠️  Warning: Failed to update credential cache: {e}");
-        }
-    }
+    // Note: Credential cache is now handled by the credential_sync module
 
     // Read and filter claude config from the user's actual config path
     println!("Reading and filtering claude config...");
@@ -427,20 +392,6 @@ impl CredentialAccess for MacOSCredentialAccess {
             }
         }
     }
-
-    async fn get_credential_modification_time(&self) -> Result<Option<std::time::SystemTime>> {
-        // For now, we'll use a simplified approach - checking if the item exists
-        // and returning current time if it does. In the future, this could be enhanced
-        // to use more sophisticated metadata tracking.
-        match get_generic_password(&self.service_name, &self.account_name) {
-            Ok(_password_data) => {
-                // Item exists, return current time as modification time
-                // TODO: Implement proper modification time tracking using item attributes
-                Ok(Some(std::time::SystemTime::now()))
-            }
-            Err(_) => Ok(None),
-        }
-    }
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -452,67 +403,4 @@ impl CredentialAccess for GenericCredentialAccess {
             .get_password()
             .context("Failed to retrieve password from keychain")
     }
-
-    async fn get_credential_modification_time(&self) -> Result<Option<std::time::SystemTime>> {
-        // Generic implementation doesn't support modification time detection
-        Ok(None)
-    }
-}
-
-/// Read cached modification time from file
-fn read_cached_modification_time(cache_path: &str) -> Result<Option<std::time::SystemTime>> {
-    let cache_file = format!("{cache_path}/.credential_cache.json");
-
-    if !std::path::Path::new(&cache_file).exists() {
-        return Ok(None);
-    }
-
-    let content =
-        fs::read_to_string(&cache_file).context("Failed to read credential cache file")?;
-
-    let cache_data: serde_json::Value =
-        serde_json::from_str(&content).context("Failed to parse credential cache JSON")?;
-
-    if let Some(timestamp_str) = cache_data.get("last_modification").and_then(|v| v.as_str()) {
-        let timestamp = std::time::SystemTime::UNIX_EPOCH
-            + std::time::Duration::from_secs(
-                timestamp_str
-                    .parse::<u64>()
-                    .context("Failed to parse timestamp")?,
-            );
-        Ok(Some(timestamp))
-    } else {
-        Ok(None)
-    }
-}
-
-/// Update credential cache with current modification time
-async fn update_credential_cache(base_dir: &str) -> Result<()> {
-    let username = get_current_username()?;
-
-    #[cfg(target_os = "macos")]
-    {
-        let access = MacOSCredentialAccess {
-            service_name: "Claude Code-credentials".to_string(),
-            account_name: username,
-        };
-
-        let mod_time = access.get_credential_modification_time().await?;
-
-        if let Some(time) = mod_time {
-            let cache_data = serde_json::json!({
-                "last_modification": time.duration_since(std::time::SystemTime::UNIX_EPOCH)
-                    .unwrap_or_default().as_secs().to_string(),
-                "last_sync": std::time::SystemTime::now()
-                    .duration_since(std::time::SystemTime::UNIX_EPOCH)
-                    .unwrap_or_default().as_secs().to_string()
-            });
-
-            let cache_file = format!("{base_dir}/.credential_cache.json");
-            fs::write(&cache_file, serde_json::to_string_pretty(&cache_data)?)
-                .context("Failed to write credential cache file")?;
-        }
-    }
-
-    Ok(())
 }

@@ -96,10 +96,11 @@ pub async fn handle_config_command(
                     "  Container Name Prefix: {}",
                     config.docker.container_name_prefix
                 );
-                println!(
-                    "  Default Web View Proxy Port: {}",
-                    config.docker.default_web_view_proxy_port
-                );
+                if let Some(port) = config.docker.default_web_view_proxy_port {
+                    println!("  Default Web View Proxy Port: {port}");
+                } else {
+                    println!("  Default Web View Proxy Port: disabled");
+                }
                 if let Some(port) = config.docker.default_ht_mcp_port {
                     println!("  Default HT-MCP Port: {port}");
                 }

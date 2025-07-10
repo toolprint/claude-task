@@ -9,6 +9,7 @@ use rmcp::{
     Error as McpError, ServerHandler, ServiceExt,
 };
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use std::future::Future;
 use tracing_subscriber::{self, EnvFilter};
 
@@ -90,6 +91,7 @@ pub struct RunTaskOptions {
     pub mcp_config: Option<String>,
     pub web_view_proxy_port: Option<u16>,
     pub ht_mcp_port: Option<u16>,
+    pub async_mode: Option<bool>,
 }
 
 #[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
@@ -324,6 +326,9 @@ impl ClaudeTaskMcpServer {
             cmd_args.push("--ht-mcp-port".to_string());
             cmd_args.push(port.to_string());
         }
+        if args.async_mode.unwrap_or(false) {
+            cmd_args.push("--background".to_string());
+        }
         self.add_global_options(&mut cmd_args, &args.global_options);
 
         let output = self
@@ -331,7 +336,30 @@ impl ClaudeTaskMcpServer {
             .await
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        // For async mode, return structured output with task and container info
+        if args.async_mode.unwrap_or(false) {
+            // Extract task ID and container ID from the output
+            let (task_id, container_id) = self.extract_async_info(&output)?;
+
+            // Return structured content
+            let structured_output = json!({
+                "task_id": task_id,
+                "container_id": container_id,
+                // TODO: The resource is not yet created and updated yet, future feature
+                "result_uri": format!("toolcall://run_task/{}", task_id)
+            });
+
+            Ok(CallToolResult::success(vec![Content::text(
+                serde_json::to_string_pretty(&structured_output)
+                    .unwrap_or_else(|_| "Failed to serialize response".to_string()),
+            )]))
+        } else {
+            // For sync mode, extract only Claude's response between the markers
+            let claude_response = self.extract_claude_response(&output)?;
+            Ok(CallToolResult::success(vec![Content::text(
+                claude_response,
+            )]))
+        }
     }
 
     #[tool(description = "Clean up both claude-task git worktrees and docker volumes")]
@@ -473,6 +501,54 @@ impl ClaudeTaskMcpServer {
         } else {
             let stderr = String::from_utf8_lossy(&output.stderr);
             Err(anyhow::anyhow!("Command failed: {}", stderr))
+        }
+    }
+
+    fn extract_claude_response(&self, output: &str) -> Result<String, McpError> {
+        const BEGIN_MARKER: &str = "=============== 💬 CLAUDE'S RESPONSE BEGIN 💬 ===============";
+        const END_MARKER: &str = "=============== 💬 CLAUDE'S RESPONSE END 💬 ===============";
+
+        // Find the markers
+        let begin_pos = output.find(BEGIN_MARKER);
+        let end_pos = output.find(END_MARKER);
+
+        match (begin_pos, end_pos) {
+            (Some(begin), Some(end)) if begin < end => {
+                // Extract content between markers
+                let start = begin + BEGIN_MARKER.len();
+                let response = output[start..end].trim();
+                Ok(response.to_string())
+            }
+            _ => {
+                // If markers not found, return an error
+                Err(McpError::internal_error(
+                    "Could not extract Claude's response from output. Response markers not found.",
+                    None,
+                ))
+            }
+        }
+    }
+
+    fn extract_async_info(&self, output: &str) -> Result<(String, String), McpError> {
+        // Look for patterns in the output to extract task ID and container ID
+        let mut task_id = None;
+        let mut container_id = None;
+
+        // Look for "Task ID: <id>" pattern
+        for line in output.lines() {
+            if let Some(tid) = line.strip_prefix("   Task ID: ") {
+                task_id = Some(tid.trim().to_string());
+            } else if let Some(cid) = line.strip_prefix("   Container ID: ") {
+                container_id = Some(cid.trim().to_string());
+            }
+        }
+
+        match (task_id, container_id) {
+            (Some(tid), Some(cid)) => Ok((tid, cid)),
+            _ => Err(McpError::internal_error(
+                "Could not extract task ID and container ID from async output",
+                None,
+            )),
         }
     }
 }

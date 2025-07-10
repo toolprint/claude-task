@@ -21,6 +21,17 @@ pub struct DockerManager {
 }
 
 #[derive(Debug, Clone)]
+pub enum TaskRunResult {
+    Sync {
+        output: String,
+    },
+    Async {
+        task_id: String,
+        container_id: String,
+    },
+}
+
+#[derive(Debug, Clone)]
 pub struct ClaudeTaskConfig {
     pub task_id: String,
     pub workspace_path: String,
@@ -28,7 +39,17 @@ pub struct ClaudeTaskConfig {
     pub dockerfile_path: String,
     pub context_path: String,
     pub ht_mcp_port: Option<u16>,
-    pub web_view_proxy_port: u16,
+    pub web_view_proxy_port: Option<u16>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RunTaskOptions {
+    pub prompt: String,
+    pub permission_prompt_tool: String,
+    pub debug: bool,
+    pub mcp_config: Option<String>,
+    pub skip_permissions: bool,
+    pub async_mode: bool,
 }
 
 impl Default for ClaudeTaskConfig {
@@ -43,7 +64,7 @@ impl Default for ClaudeTaskConfig {
             dockerfile_path: "Dockerfile".to_string(),
             context_path: "claude-task".to_string(),
             ht_mcp_port: None,
-            web_view_proxy_port: 4618,
+            web_view_proxy_port: None,
         }
     }
 }
@@ -173,25 +194,12 @@ impl DockerManager {
     pub async fn run_claude_task(
         &self,
         config: &ClaudeTaskConfig,
-        prompt: &str,
-        permission_prompt_tool: &str,
-        debug: bool,
-        mcp_config: Option<String>,
-        skip_permissions: bool,
-    ) -> Result<()> {
+        options: &RunTaskOptions,
+    ) -> Result<TaskRunResult> {
         println!("🚀 Starting Claude task container...");
 
         // Create container configuration
-        let container_config = self
-            .create_container_config(
-                config,
-                prompt,
-                permission_prompt_tool,
-                debug,
-                mcp_config,
-                skip_permissions,
-            )
-            .await?;
+        let container_config = self.create_container_config(config, options).await?;
 
         let container_name = format!("{}{}", self.config.container_name_prefix, config.task_id);
 
@@ -227,45 +235,65 @@ impl DockerManager {
 
         println!("✓ Container started");
 
-        // Stream logs
-        self.stream_container_logs(&container.id).await?;
+        if options.async_mode {
+            // Return immediately for async mode
+            println!("📋 Task started in background mode");
+            println!("   Task ID: {}", config.task_id);
+            println!("   Container ID: {}", container.id);
+            println!("   Monitor with: docker logs {container_name}");
 
-        // Wait for container to finish
-        let wait_options = WaitContainerOptions {
-            condition: "not-running".to_string(),
-        };
+            Ok(TaskRunResult::Async {
+                task_id: config.task_id.clone(),
+                container_id: container.id,
+            })
+        } else {
+            // Show waiting indicator
+            println!();
+            println!("⏳ Waiting for Claude's response...");
 
-        let mut wait_stream = self
-            .docker
-            .wait_container(&container.id, Some(wait_options));
-        if let Some(result) = wait_stream.next().await {
-            match result {
-                Ok(wait_result) => {
-                    if wait_result.status_code != 0 {
-                        return Err(anyhow::anyhow!(
-                            "Container exited with non-zero status: {}",
-                            wait_result.status_code
-                        ));
+            // Stream logs and parse output for sync mode
+            let claude_output = self
+                .stream_and_parse_logs(&container.id, options.debug)
+                .await?;
+
+            // Wait for container to finish
+            let wait_options = WaitContainerOptions {
+                condition: "not-running".to_string(),
+            };
+
+            let mut wait_stream = self
+                .docker
+                .wait_container(&container.id, Some(wait_options));
+            if let Some(result) = wait_stream.next().await {
+                match result {
+                    Ok(wait_result) => {
+                        if wait_result.status_code != 0 {
+                            return Err(anyhow::anyhow!(
+                                "Container exited with non-zero status: {}",
+                                wait_result.status_code
+                            ));
+                        }
                     }
+                    Err(e) => return Err(anyhow::anyhow!("Wait error: {}", e)),
                 }
-                Err(e) => return Err(anyhow::anyhow!("Wait error: {}", e)),
             }
+
+            // Container will auto-remove itself due to auto_remove: true
+
+            println!();
+            println!("=============== 💬 CLAUDE'S RESPONSE END 💬 ===============");
+            println!();
+
+            Ok(TaskRunResult::Sync {
+                output: claude_output,
+            })
         }
-
-        // Container will auto-remove itself due to auto_remove: true
-
-        println!("✅ Claude task completed successfully!");
-        Ok(())
     }
 
     async fn create_container_config(
         &self,
         config: &ClaudeTaskConfig,
-        prompt: &str,
-        permission_prompt_tool: &str,
-        debug: bool,
-        mcp_config: Option<String>,
-        skip_permissions: bool,
+        options: &RunTaskOptions,
     ) -> Result<Config<String>> {
         // Create mounts for volumes
         let mut mounts = vec![
@@ -309,7 +337,7 @@ impl DockerManager {
         }
 
         // Add custom MCP config mount if provided
-        if let Some(ref mcp_config_path) = mcp_config {
+        if let Some(ref mcp_config_path) = options.mcp_config {
             let source_path = Path::new(mcp_config_path);
             if source_path.exists() {
                 mounts.push(Mount {
@@ -328,6 +356,10 @@ impl DockerManager {
             "NODE_OPTIONS=--max-old-space-size=4096".to_string(),
             "CLAUDE_CONFIG_DIR=/home/node/.claude".to_string(),
             "POWERLEVEL9K_DISABLE_GITSTATUS=true".to_string(),
+            format!(
+                "DEBUG_MODE={}",
+                if options.debug { "true" } else { "false" }
+            ),
         ];
 
         // Add CCO MCP URL if HT-MCP is enabled
@@ -341,50 +373,49 @@ impl DockerManager {
                 name: Some(RestartPolicyNameEnum::NO),
                 ..Default::default()
             }),
-            auto_remove: Some(true),
+            auto_remove: Some(!options.async_mode), // Don't auto-remove in async mode
             ..Default::default()
         };
 
         // Add port mapping for web view proxy if specified
-        if config.web_view_proxy_port > 0 {
-            use bollard::models::PortBinding;
-            use std::collections::HashMap;
+        if let Some(port) = config.web_view_proxy_port {
+            if port > 0 {
+                use bollard::models::PortBinding;
+                use std::collections::HashMap;
 
-            let mut port_bindings = HashMap::new();
+                let mut port_bindings = HashMap::new();
 
-            // Only expose nginx proxy port (container 4618 -> host configured port)
-            port_bindings.insert(
-                "4618/tcp".to_string(),
-                Some(vec![PortBinding {
-                    host_ip: Some("0.0.0.0".to_string()),
-                    host_port: Some(config.web_view_proxy_port.to_string()),
-                }]),
-            );
+                // Only expose nginx proxy port (container 4618 -> host configured port)
+                port_bindings.insert(
+                    "4618/tcp".to_string(),
+                    Some(vec![PortBinding {
+                        host_ip: Some("0.0.0.0".to_string()),
+                        host_port: Some(port.to_string()),
+                    }]),
+                );
 
-            host_config.port_bindings = Some(port_bindings);
+                host_config.port_bindings = Some(port_bindings);
 
-            println!("🌐 Web interface will be available at:");
-            println!(
-                "   Web Proxy: http://localhost:{} (NGINX proxy with fallback page)",
-                config.web_view_proxy_port
-            );
+                println!("🌐 Web interface will be available at:");
+                println!("   Web Proxy: http://localhost:{port} (NGINX proxy with fallback page)");
+            }
         }
 
         // Build the claude command
         let mut claude_cmd = vec!["claude".to_string()];
 
-        if skip_permissions {
+        if options.skip_permissions {
             claude_cmd.push("--dangerously-skip-permissions".to_string());
         } else {
             claude_cmd.push("--permission-prompt-tool".to_string());
-            claude_cmd.push(permission_prompt_tool.to_string());
+            claude_cmd.push(options.permission_prompt_tool.to_string());
         }
 
-        if debug {
+        if options.debug {
             claude_cmd.push("--debug".to_string());
         }
 
-        if let Some(ref mcp_config_path) = mcp_config {
+        if let Some(ref mcp_config_path) = options.mcp_config {
             let source_path = Path::new(mcp_config_path);
             if source_path.exists() {
                 claude_cmd.push("--mcp-config".to_string());
@@ -392,12 +423,12 @@ impl DockerManager {
             }
         }
 
-        claude_cmd.extend(vec!["-p".to_string(), prompt.to_string()]);
+        claude_cmd.extend(vec!["-p".to_string(), options.prompt.to_string()]);
 
         // The entrypoint script will run automatically, we just need to pass the claude command
         let cmd = claude_cmd;
 
-        if debug {
+        if options.debug {
             println!("🔍 Container command:");
             println!("   Claude command: {}", cmd.join(" "));
             println!("   (Entrypoint script will run automatically)");
@@ -413,17 +444,19 @@ impl DockerManager {
         };
 
         // Add exposed ports if web view proxy is enabled
-        if config.web_view_proxy_port > 0 {
-            use std::collections::HashMap;
-            let mut exposed_ports = HashMap::new();
-            exposed_ports.insert("4618/tcp".to_string(), HashMap::new()); // nginx proxy only
-            container_config.exposed_ports = Some(exposed_ports);
+        if let Some(port) = config.web_view_proxy_port {
+            if port > 0 {
+                use std::collections::HashMap;
+                let mut exposed_ports = HashMap::new();
+                exposed_ports.insert("4618/tcp".to_string(), HashMap::new()); // nginx proxy only
+                container_config.exposed_ports = Some(exposed_ports);
+            }
         }
 
         Ok(container_config)
     }
 
-    async fn stream_container_logs(&self, container_id: &str) -> Result<()> {
+    async fn stream_and_parse_logs(&self, container_id: &str, debug: bool) -> Result<String> {
         let logs_options = LogsOptions::<String> {
             follow: true,
             stdout: true,
@@ -432,14 +465,46 @@ impl DockerManager {
         };
 
         let mut log_stream = self.docker.logs(container_id, Some(logs_options));
+        let mut claude_output = String::new();
+        let mut capturing_claude = false;
+        let mut response_started = false;
 
         while let Some(result) = log_stream.next().await {
             match result {
                 Ok(LogOutput::StdOut { message }) => {
-                    print!("{}", String::from_utf8_lossy(&message));
+                    let text = String::from_utf8_lossy(&message);
+
+                    // Print the BEGIN marker when we first receive stdout output
+                    if !response_started && capturing_claude {
+                        println!();
+                        println!("=============== 💬 CLAUDE'S RESPONSE BEGIN 💬 ===============");
+                        println!();
+                        response_started = true;
+                    }
+
+                    // Always stream stdout to the user
+                    print!("{text}");
+                    // Capture it for return value
+                    claude_output.push_str(&text);
                 }
                 Ok(LogOutput::StdErr { message }) => {
-                    eprint!("{}", String::from_utf8_lossy(&message));
+                    let text = String::from_utf8_lossy(&message);
+
+                    // Check for output markers
+                    if text.contains("=== CLAUDE_OUTPUT_START ===") {
+                        capturing_claude = true;
+                        if debug {
+                            eprintln!("{text}");
+                        }
+                    } else if text.contains("=== CLAUDE_OUTPUT_END ===") {
+                        capturing_claude = false;
+                        if debug {
+                            eprintln!("{text}");
+                        }
+                    } else if debug || !capturing_claude {
+                        // Show setup logs in debug mode or when not in Claude output section
+                        eprint!("{text}");
+                    }
                 }
                 Ok(_) => {}
                 Err(e) => {
@@ -449,7 +514,7 @@ impl DockerManager {
             }
         }
 
-        Ok(())
+        Ok(claude_output)
     }
 
     fn create_tar_archive(&self, context_path: &Path) -> Result<Vec<u8>> {

@@ -35,6 +35,7 @@ struct TaskRunConfig<'a> {
     open_editor: bool,
     ht_mcp_port: Option<u16>,
     web_view_proxy_port: u16,
+    require_ht_mcp: bool,
     docker_config: &'a config::DockerConfig,
     claude_user_config: &'a config::ClaudeUserConfig,
     worktree_config: &'a config::WorktreeConfig,
@@ -140,6 +141,10 @@ struct Cli {
     /// Enable debug mode
     #[arg(short = 'd', long, global = true)]
     debug: bool,
+
+    /// Require ht-mcp to be available for tasks (overrides config setting)
+    #[arg(long, global = true)]
+    require_ht_mcp: bool,
 
     /// Path to the configuration file (defaults to ~/.claude-task/config.json)
     #[arg(long, global = true, value_name = "PATH", help = "Path to config file")]
@@ -1076,6 +1081,35 @@ async fn run_claude_task(config: TaskRunConfig<'_>) -> Result<()> {
             println!();
         } else if config.debug {
             println!("✓ Credentials are up to date, skipping refresh");
+        }
+    }
+
+    // Validate ht-mcp availability when web view port or ht-mcp port is requested
+    let ht_mcp_available = config::Config::check_ht_mcp_availability();
+
+    if config.ht_mcp_port.is_some() && !ht_mcp_available {
+        if config.require_ht_mcp {
+            anyhow::bail!(
+                "HT-MCP port specified but ht-mcp binary is not available, and require_ht_mcp is set to true. \
+                Please install ht-mcp or disable require_ht_mcp in config."
+            );
+        } else {
+            println!("⚠️  HT-MCP port specified but ht-mcp binary is not available");
+            println!("   Continuing without ht-mcp functionality (require_ht_mcp=false)");
+        }
+    }
+
+    if config.web_view_proxy_port > 0 && (config.ht_mcp_port.is_none() || !ht_mcp_available) {
+        println!("ℹ️  Web view proxy port specified but ht-mcp is not properly configured");
+        println!("   Web view functionality requires ht-mcp for terminal monitoring");
+
+        if config.require_ht_mcp {
+            anyhow::bail!(
+                "Web view proxy port requires ht-mcp to be available and enabled, but require_ht_mcp is set to true. \
+                Please install ht-mcp and provide --ht-mcp-port or disable require_ht_mcp in config."
+            );
+        } else {
+            println!("   Continuing without web view monitoring (require_ht_mcp=false)");
         }
     }
 
@@ -2087,6 +2121,7 @@ async fn main() -> Result<()> {
                 open_editor,
                 ht_mcp_port,
                 web_view_proxy_port,
+                require_ht_mcp: cli.require_ht_mcp || config.global_option_defaults.require_ht_mcp,
                 docker_config: &config.docker,
                 claude_user_config: &config.claude_user_config,
                 worktree_config: &config.worktree,

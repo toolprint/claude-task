@@ -33,4 +33,7 @@ examples/local-nginx-test/tmp/
 
 # Docker build context
 docker/target/
-docker/ht-mcp-release/
+
+# ht-mcp binaries (keep .gitkeep only)
+docker/ht-mcp-release/*
+!docker/ht-mcp-release/.gitkeep

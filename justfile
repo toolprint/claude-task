@@ -333,9 +333,17 @@ build-ht-mcp version="latest":
 
 # Docker Commands
 
-# Prepare ht-mcp binaries for Docker build
+# Prepare Docker build (default: without ht-mcp)
 [group('docker')]
 prepare-docker:
+    @echo "🔨 Preparing Docker build (without ht-mcp)..."
+    @echo "ℹ️  For lightweight Docker images, ht-mcp binaries are not included by default"
+    @echo "   Use 'just prepare-docker-with-ht-mcp' if you need ht-mcp functionality"
+    @echo "✅ Docker build preparation complete (no ht-mcp binaries needed)"
+
+# Prepare Docker build with ht-mcp binaries included
+[group('docker')]
+prepare-docker-with-ht-mcp:
     #!/usr/bin/env bash
     echo "🔨 Preparing ht-mcp binaries for Docker build..."
     
@@ -356,12 +364,17 @@ prepare-docker:
     echo "📁 Copying ht-mcp release files to docker/ht-mcp-release..."
     rm -rf docker/ht-mcp-release
     cp -r modules/ht-mcp/release docker/ht-mcp-release
-    echo "✅ Docker build preparation complete"
+    echo "✅ Docker build preparation complete (with ht-mcp binaries)"
 
-# Build Docker image using buildx
+# Build Docker image using buildx (default: without ht-mcp)
 [group('docker')]
 docker-bake:
     @docker buildx bake -f docker/docker-bake.hcl --no-cache
+
+# Build Docker image with ht-mcp included
+[group('docker')]
+docker-bake-with-ht-mcp:
+    @docker buildx bake -f docker/docker-bake.hcl with-ht-mcp --no-cache
 
 # Test Docker setup
 [group('docker')]

@@ -8,20 +8,32 @@ Claude Task is a Rust CLI tool that creates isolated development environments fo
 
 ## Core Architecture
 
-The project consists of five main modules:
+The project consists of six main modules:
 
 - **`main.rs`**: CLI interface using clap, orchestrates all operations
 - **`credentials.rs`**: macOS keychain extraction and biometric authentication
+- **`credential_sync.rs`**: Synchronization manager to minimize biometric prompts for parallel tasks
 - **`docker.rs`**: Docker container and volume management using Bollard API
 - **`mcp.rs`**: MCP (Model Context Protocol) server implementation exposing CLI functionality as tools
 - **`permission.rs`**: Approval tool permission validation for secure MCP operations
+- **`config.rs`**: Configuration management for persistent settings
+- **`handle_config.rs`**: Config file operations (init, edit, validate, show)
 
 ### Key Data Flow
 
-1. **Setup Phase**: Extract macOS credentials → Create Docker volumes → Configure environment
+1. **Setup Phase**: Extract macOS credentials → Sync with lock mechanism → Create Docker volumes → Configure environment
 2. **Task Phase**: Create git worktree → Build/validate Docker image → Run containerized Claude
-3. **Cleanup Phase**: Remove worktrees and volumes
+3. **Cleanup Phase**: Remove worktrees (with status checking) and volumes
 4. **MCP Mode**: Start stdio server → Expose CLI operations as MCP tools → Validate permissions
+
+### Credential Synchronization
+
+When multiple tasks run in parallel:
+- First task acquires file-based lock and extracts credentials
+- Other tasks wait up to 60 seconds for sync completion
+- 5-minute validation window prevents redundant biometric prompts
+- Automatic retry on credential errors with fresh extraction
+- Metadata stored in `{task_base_home_dir}/.credential_metadata/`
 
 ## Development Commands
 
@@ -30,11 +42,14 @@ The project consists of five main modules:
 # Build project
 just build
 
-# Build release version
+# Build release version  
 just build-release
 
 # Run tests
 just test
+
+# Run specific test
+cargo test test_name
 
 # Check code without building
 just check
@@ -44,6 +59,9 @@ just fmt
 
 # Run clippy linter
 just clippy
+
+# Pre-commit validation (runs all checks)
+just pre-commit
 ```
 
 ### Running the CLI
@@ -65,11 +83,29 @@ just run mcp
 
 ### Docker Operations
 ```bash
-# Build Docker image
-just build-docker-image
+# Build Docker image (without HT-MCP)
+just docker-bake
 
-# Manual Docker build
-docker buildx bake
+# Build with HT-MCP support
+just prepare-docker-with-ht-mcp
+just docker-bake-with-ht-mcp
+
+# Test Docker setup
+just test-docker
+```
+
+### HT-MCP Development
+```bash
+# Sync and build HT-MCP submodule
+just sync-modules
+just build-ht-mcp
+
+# Run with HT-MCP web interface
+just run-ht-mcp
+just run-ht-mcp-debug
+
+# Test NGINX proxy locally
+just test-nginx-local
 ```
 
 ## Architecture Details
@@ -77,153 +113,81 @@ docker buildx bake
 ### Git Worktree Management
 - Creates timestamped branches with `claude-task/` prefix
 - Stores worktrees in `~/.claude-task/worktrees/` by default
-- Handles branch cleanup and worktree removal
-- Functions in `main.rs` handle worktree lifecycle
+- Status checking detects uncommitted changes, unpushed commits, missing remotes
+- Smart cleanup separates clean vs unclean worktrees (--force required for unclean)
+- Squash-merge detection prevents false positive "unclean" status
 
 ### Docker Integration
-- Uses Bollard library for Docker API communication
+- Uses Bollard library for async Docker API communication
 - Creates shared volumes: `claude-task-home`, `claude-task-npm-cache`, `claude-task-node-cache`
-- Container configuration in `docker.rs`
-- Mounts workspace, credentials, and optional MCP configs
+- Supports both sync and async task execution modes
+- Optional HT-MCP integration for web-based terminal monitoring
+- NGINX proxy on port 4618 for reliable WebSocket connections
 
-### Credential Management
-- Extracts macOS keychain using `keyring` crate
-- Implements biometric authentication with Touch ID/Face ID
-- Filters and packages Claude configuration files
-- Creates read-only bind mounts for container access
-
-### Container Environment
-- Based on Node.js 22 with development tools
-- Installs Claude Code globally via npm
-- Sets up zsh with powerline10k theme
-- Mounts workspaces and credentials securely
+### Configuration System
+- Persistent config at `~/.claude-task/config.json`
+- Supports custom paths, Docker settings, and defaults
+- Config commands: init, edit, show, validate
+- Command-line args override config values
 
 ### MCP Server Architecture
-- Implements full MCP (Model Context Protocol) server using `rmcp` crate
-- Exposes all CLI functionality as MCP tools for Claude Code integration
-- Uses stdio transport for direct communication with Claude Code
-- Validates approval tool permissions with format `mcp__<server_name>__<tool_name>`
-- Provides structured error handling and parameter validation
-
-## Configuration
-
-### Default Locations
-- Worktrees: `~/.claude-task/worktrees/`
-- Task home: `~/.claude-task/home/`
-- Branch prefix: `claude-task/`
-
-### Docker Volumes
-- `claude-task-home`: Contains credentials and config (read-only)
-- `claude-task-npm-cache`: Shared npm cache
-- `claude-task-node-cache`: Shared node cache
-
-### Container Mounts
-- `/workspace`: Project workspace (bind mount)
-- `/home/base`: Credentials volume (read-only)
-- `/home/node/.npm`: npm cache volume
-- `/home/node/.cache`: node cache volume
+- Uses `rmcp` crate for MCP protocol implementation
+- All CLI commands exposed as MCP tools with JSON Schema validation
+- Approval tool permissions format: `mcp__<server_name>__<tool_name>`
+- Build script (`build.rs`) auto-generates tool documentation
+- Global options embedded in each tool's parameters
 
 ## Key Implementation Notes
 
 ### Error Handling
 - Uses `anyhow` for error context throughout
+- Credential errors trigger automatic retry with re-sync
 - Graceful fallbacks for missing Docker images
 - User confirmation prompts for dangerous operations
 
 ### Security Considerations
 - Biometric authentication for keychain access
-- Read-only credential mounts
-- Permission prompts for dangerous operations
-- Isolated container environments
-- MCP approval tool permission validation prevents unauthorized operations
+- Read-only credential mounts in containers
+- No credentials stored in sync metadata (only hashes)
+- MCP approval tool validation prevents unauthorized operations
+- Permission prompts for destructive actions
 
 ### Performance Optimizations
-- Shared npm/node cache volumes
-- Reusable Docker images
-- Parallel volume creation
-- Stream-based Docker operations
-
-## Dependencies
-
-### Core Dependencies
-- `clap`: CLI argument parsing
-- `anyhow`: Error handling
-- `tokio`: Async runtime
-- `bollard`: Docker API client
-- `keyring`: macOS keychain access
-- `localauthentication-rs`: Biometric authentication
-- `rmcp`: MCP (Model Context Protocol) server implementation
-- `serde`: JSON serialization for MCP tools
-- `tracing`: Logging for MCP server
-
-### Container Dependencies
-- Node.js 22 base image
-- Claude Code npm package
-- Development tools (git, ripgrep, fzf, etc.)
-- zsh with powerline10k theme
+- Shared npm/node cache volumes across tasks
+- Credential sync reduces redundant keychain access
+- Parallel Docker volume creation
+- Stream-based log parsing for real-time output
 
 ## Testing
 
-Run tests with:
+### Running Tests
 ```bash
+# All tests
 just test
-```
 
-Test files are in `tests/` directory and include MCP integration tests.
+# Specific test module
+cargo test credential_sync
 
-### Running Specific Tests
-```bash
-# Run MCP-specific tests
-cargo test mcp
-
-# Run with debug output
+# With output
 cargo test -- --nocapture
 
-# Run a single test
-cargo test test_mcp_config_validation
+# Single test
+cargo test test_parallel_sync_with_lock
 ```
 
-## Build System Details
-
-### Build Script (`build.rs`)
-- Parses `src/mcp.rs` to extract MCP tool definitions at compile time
-- Generates `mcp_help.rs` with tool documentation
-- Uses `syn` crate for AST parsing and `quote` for code generation
-
-### Multi-platform Docker Build
-- Uses `docker-bake.hcl` for buildx configuration
-- Supports both AMD64 and ARM64 architectures
-- Multi-stage Dockerfile optimizes image size
-
-## MCP Server Development
-
-### Running the MCP Server
-```bash
-# Start MCP server (stdio mode)
-cargo run -- mcp
-
-# Start with debug logging
-RUST_LOG=debug cargo run -- mcp
-
-# Test MCP server with a real task
-just task "test prompt" --approval-tool-permission "mcp__approval_server__approve_command"
-```
-
-### MCP Tool Development
-- All CLI commands are exposed as MCP tools in `src/mcp.rs`
-- Tool parameters use JSON Schema for validation
-- Approval tool permissions must follow format: `mcp__<server_name>__<tool_name>`
-- Global options (debug, worktree-base-dir, etc.) are embedded in each tool
-- MCP config files can be passed through and mounted in containers
-- Build script auto-generates help text from tool definitions
+### Test Organization
+- Unit tests in each module (bottom of source files)
+- Integration tests in `tests/` directory
+- MCP integration tests in `tests/mcp.rs`
+- Credential sync tests cover parallel execution scenarios
 
 ## Common Development Tasks
 
 ### Adding a New CLI Command
-1. Add the command variant to the `Commands` enum in `main.rs`
-2. Implement the command handler in the appropriate module
-3. If exposing via MCP, add corresponding tool in `mcp.rs`
-4. Update tests if needed
+1. Add command variant to `Commands` enum in `main.rs`
+2. Implement handler in appropriate module or create new module
+3. If exposing via MCP, add `#[tool(description = "...")]` decorated method in `mcp.rs`
+4. Update tests and run `just pre-commit`
 
 ### Debugging Docker Container Issues
 ```bash
@@ -234,10 +198,40 @@ RUST_LOG=debug just run <command>
 docker volume ls | grep claude-task
 docker volume inspect claude-task-home
 
-# Run container interactively for debugging
+# Run container interactively
 docker run -it --rm \
   -v claude-task-home:/home/base:ro \
   -v $(pwd):/workspace \
   ghcr.io/anthropics/claude-code-docker-base \
   /bin/bash
 ```
+
+### Working with Credential Sync
+```bash
+# Check sync metadata
+ls -la ~/.claude-task/home/.credential_metadata/
+
+# Debug sync issues
+RUST_LOG=debug just run setup --debug
+
+# Force credential refresh
+rm -rf ~/.claude-task/home/.credential_metadata/
+```
+
+## Build System Details
+
+### Multi-stage Dockerfile
+- Base stage: Node.js 22 with development tools
+- Optional HT-MCP stage adds terminal server binaries
+- Final stage configures user environment and entrypoint
+
+### Build Script (`build.rs`)
+- Parses `src/mcp.rs` AST to extract tool definitions
+- Generates `mcp_help.rs` with tool documentation
+- Uses `syn` for parsing and `quote` for code generation
+- Runs at compile time, output in `target/debug/build/*/out/`
+
+### Platform Support
+- Primary: macOS (with keychain and biometric auth)
+- Docker images: linux/amd64 and linux/arm64
+- HT-MCP binaries required for both architectures

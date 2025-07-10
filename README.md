@@ -12,6 +12,7 @@ Claude Task is a Rust-based CLI utility that streamlines the creation of isolate
 - Extracts macOS keychain credentials for Claude Code authentication
 - Configures Claude settings for containerized environments
 - Sets up isolated home directories with proper permissions
+- **Credential synchronization** - reduces biometric prompts for parallel tasks with 5-minute validation window
 
 ### Git Worktree Management
 - Creates isolated git worktrees for development sessions
@@ -48,6 +49,17 @@ Claude Task is a Rust-based CLI utility that streamlines the creation of isolate
 - Supports stdio transport for direct integration
 - Enables seamless task management from within Claude Code sessions
 - Validates approval tool permissions for secure operations
+
+### Credential Synchronization
+Claude Task includes intelligent credential synchronization to minimize biometric authentication prompts when running multiple tasks in parallel:
+
+- **Lock-based coordination** - Prevents concurrent credential extractions using file-based locks
+- **5-minute validation window** - Reuses credentials validated within the last 5 minutes
+- **Automatic retry on failure** - Refreshes credentials and retries once on authentication errors
+- **Thread-safe implementation** - Multiple tasks coordinate through filesystem metadata
+- **Transparent operation** - No credentials stored in metadata, only timestamps and hashes
+
+When multiple claude-task instances start simultaneously, only the first one prompts for biometric authentication. Other instances wait up to 60 seconds for the sync to complete, then proceed without additional prompts if credentials were recently validated.
 
 ## Installation
 
@@ -293,6 +305,7 @@ claude-task/
 ├── src/                            # Rust source code
 │   ├── main.rs                     # Main CLI entry point
 │   ├── credentials.rs              # macOS keychain credential extraction
+│   ├── credential_sync.rs          # Credential synchronization for parallel tasks
 │   ├── docker.rs                   # Docker volume and container management
 │   ├── mcp.rs                      # MCP (Model Context Protocol) server implementation
 │   ├── permission.rs               # Approval tool permission validation
@@ -463,6 +476,8 @@ When running the MCP server (`claude-task mcp`), the following apply:
 - **Worktree shows as unclean**: Check for uncommitted changes with `git status` or unpushed commits
 - **False positive unclean status**: May indicate squash-merged branch - check if branch was merged via PR
 - **Clean command skips worktrees**: Use `--force` flag to remove unclean worktrees
+- **Multiple biometric prompts**: Credential sync system should prevent this - check `.credential_metadata/` directory permissions
+- **Credential sync timeout**: Other tasks waiting for sync may timeout after 60 seconds - retry the operation
 
 ### HT-MCP Specific Issues
 - **HT-MCP binary not found**: Ensure the HT-MCP submodule is properly initialized

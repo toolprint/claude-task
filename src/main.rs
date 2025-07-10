@@ -12,6 +12,7 @@ include!(concat!(env!("OUT_DIR"), "/mcp_help.rs"));
 
 mod assets;
 mod config;
+mod credential_sync;
 mod credentials;
 mod docker;
 mod handle_config;
@@ -34,18 +35,16 @@ struct TaskRunConfig<'a> {
     task_base_home_dir: &'a str,
     open_editor: bool,
     ht_mcp_port: Option<u16>,
-    web_view_proxy_port: u16,
+    web_view_proxy_port: Option<u16>,
     require_ht_mcp: bool,
     docker_config: &'a config::DockerConfig,
     claude_user_config: &'a config::ClaudeUserConfig,
     worktree_config: &'a config::WorktreeConfig,
+    async_mode: bool,
 }
 
 use config::Config;
-use credentials::{
-    check_credential_freshness, setup_credentials_and_config,
-    setup_credentials_and_config_with_cache,
-};
+use credentials::{setup_credentials_and_config, setup_credentials_and_config_with_cache};
 use docker::{ClaudeTaskConfig, DockerManager};
 use handle_config::handle_config_command;
 
@@ -131,7 +130,7 @@ struct Cli {
     worktree_base_dir: String,
 
     /// Branch prefix for worktrees
-    #[arg(short = 'b', long, global = true, default_value = "claude-task/")]
+    #[arg(long, global = true, default_value = "claude-task/")]
     branch_prefix: String,
 
     /// Base directory for task home directory and setup files
@@ -177,7 +176,7 @@ enum Commands {
         /// The prompt to pass to Claude
         prompt: String,
         /// Optional task ID (generates short ID if not provided)
-        #[arg(long)]
+        #[arg(short = 't', long)]
         task_id: Option<String>,
         /// Build the image before running (default: false)
         #[arg(long)]
@@ -200,9 +199,12 @@ enum Commands {
         /// Port to expose for HT-MCP web interface (e.g., 8080)
         #[arg(long)]
         ht_mcp_port: Option<u16>,
-        /// Port to expose for web view proxy to see terminal commands the task runs (default: 4618)
-        #[arg(long, default_value = "4618")]
-        web_view_proxy_port: u16,
+        /// Port to expose for web view proxy to see terminal commands the task runs
+        #[arg(long)]
+        web_view_proxy_port: Option<u16>,
+        /// Run task in background mode (returns immediately with container ID)
+        #[arg(short = 'b', long = "background")]
+        async_mode: bool,
     },
     /// Clean up both claude-task git worktrees and docker volumes
     #[command(visible_alias = "c")]
@@ -1053,34 +1055,50 @@ async fn run_claude_task(config: TaskRunConfig<'_>) -> Result<()> {
         .await?;
         println!();
     } else {
-        // Volume exists, check if credentials need refreshing
+        // Volume exists, use credential sync manager to handle synchronization
         if config.debug {
             println!("✓ {} volume found", config.docker_config.volumes.home);
-            println!("🔍 Checking credential freshness...");
+            println!("🔍 Checking credential synchronization...");
         }
 
-        let credentials_need_refresh = check_credential_freshness(config.task_base_home_dir)
-            .await
-            .unwrap_or_else(|e| {
-                if config.debug {
-                    println!("⚠️  Warning: Could not check credential freshness: {e}");
-                    println!("   Assuming credentials need refresh for safety");
-                }
-                true
-            });
+        // Create sync manager
+        let sync_manager =
+            credential_sync::CredentialSyncManager::new(config.task_base_home_dir, &task_id)?;
 
-        if credentials_need_refresh {
-            println!("🔄 Credentials have changed, refreshing...");
-            setup_credentials_and_config_with_cache(
-                config.task_base_home_dir,
+        // Sync credentials if needed with lock mechanism
+        let synced = sync_manager
+            .sync_credentials_if_needed(
+                || {
+                    let task_base_home_dir = config.task_base_home_dir.to_string();
+                    let debug = config.debug;
+                    let claude_user_config = config.claude_user_config.clone();
+
+                    async move {
+                        // Extract credentials directly
+                        let credentials = credentials::extract_keychain_credentials().await?;
+
+                        // Setup the full configuration (including writing the credentials)
+                        setup_credentials_and_config_with_cache(
+                            &task_base_home_dir,
+                            debug,
+                            &claude_user_config,
+                            true,
+                        )
+                        .await?;
+
+                        // Return the credentials string for hashing
+                        Ok(credentials)
+                    }
+                },
                 config.debug,
-                config.claude_user_config,
-                true,
             )
             .await?;
+
+        if synced {
+            println!("🔄 Credentials synchronized successfully");
             println!();
         } else if config.debug {
-            println!("✓ Credentials are up to date, skipping refresh");
+            println!("✓ Credentials recently validated, skipping sync");
         }
     }
 
@@ -1099,7 +1117,7 @@ async fn run_claude_task(config: TaskRunConfig<'_>) -> Result<()> {
         }
     }
 
-    if config.web_view_proxy_port > 0 && (config.ht_mcp_port.is_none() || !ht_mcp_available) {
+    if config.web_view_proxy_port.is_some() && (config.ht_mcp_port.is_none() || !ht_mcp_available) {
         println!("ℹ️  Web view proxy port specified but ht-mcp is not properly configured");
         println!("   Web view functionality requires ht-mcp for terminal monitoring");
 
@@ -1131,10 +1149,11 @@ async fn run_claude_task(config: TaskRunConfig<'_>) -> Result<()> {
             println!("   - HT-MCP port: {port}");
             println!("   - NGINX proxy (container): 0.0.0.0:4618 -> 127.0.0.1:3618");
         }
-        println!(
-            "   - Web view proxy port (host): {}",
-            claude_config.web_view_proxy_port
-        );
+        if let Some(port) = claude_config.web_view_proxy_port {
+            println!("   - Web view proxy port (host): {port}");
+        } else {
+            println!("   - Web view proxy port: disabled");
+        }
     }
 
     // Create volumes (npm and node cache)
@@ -1195,19 +1214,134 @@ async fn run_claude_task(config: TaskRunConfig<'_>) -> Result<()> {
     }
 
     // Run Claude task
-    docker_manager
-        .run_claude_task(
-            &claude_config,
-            config.prompt,
-            &permission_tool_arg,
-            config.debug,
-            validated_mcp_config,
-            skip_permissions,
-        )
-        .await?;
+    let run_options = docker::RunTaskOptions {
+        prompt: config.prompt.to_string(),
+        permission_prompt_tool: permission_tool_arg,
+        debug: config.debug,
+        mcp_config: validated_mcp_config.clone(),
+        skip_permissions,
+        async_mode: config.async_mode,
+    };
 
-    println!("   Task ID: {task_id}");
-    println!("   Shared volume: {}", config.docker_config.volumes.home);
+    let result = docker_manager
+        .run_claude_task(&claude_config, &run_options)
+        .await;
+
+    match result {
+        Ok(docker::TaskRunResult::Sync { output }) => {
+            // Output was already streamed during execution
+            let _ = output;
+
+            // Update validation timestamp on successful completion
+            let sync_manager =
+                credential_sync::CredentialSyncManager::new(config.task_base_home_dir, &task_id)?;
+
+            if let Err(e) = sync_manager.update_validation_timestamp() {
+                if config.debug {
+                    println!("⚠️  Warning: Failed to update validation timestamp: {e}");
+                }
+            }
+
+            println!("✅ Claude task completed successfully!");
+            println!("   Task ID: {task_id}");
+            println!("   Shared volume: {}", config.docker_config.volumes.home);
+        }
+        Ok(docker::TaskRunResult::Async {
+            task_id: async_task_id,
+            container_id,
+        }) => {
+            // Task is running in background
+            let _ = async_task_id;
+            println!("\n📋 Task is running in background");
+            println!("   Container ID: {container_id}");
+            println!("   Monitor logs: docker logs -f {container_id}");
+            println!("   Stop task: docker stop {container_id}");
+            println!("   Clean up: docker rm {container_id}");
+
+            // Note: For async tasks, we cannot update validation timestamp
+            // as we don't know when/if they complete successfully
+        }
+        Err(e) => {
+            // Check if this is a credential error
+            let error_msg = e.to_string();
+            if credential_sync::CredentialSyncManager::is_credential_error(&error_msg) {
+                println!("🔐 Credential error detected: {e}");
+                println!("🔄 Attempting to refresh credentials and retry...");
+
+                // Force credential sync
+                let sync_manager = credential_sync::CredentialSyncManager::new(
+                    config.task_base_home_dir,
+                    &task_id,
+                )?;
+
+                sync_manager
+                    .sync_credentials_if_needed(
+                        || {
+                            let task_base_home_dir = config.task_base_home_dir.to_string();
+                            let debug = config.debug;
+                            let claude_user_config = config.claude_user_config.clone();
+
+                            async move {
+                                // Extract credentials directly
+                                let credentials =
+                                    credentials::extract_keychain_credentials().await?;
+
+                                // Setup the full configuration (including writing the credentials)
+                                setup_credentials_and_config_with_cache(
+                                    &task_base_home_dir,
+                                    debug,
+                                    &claude_user_config,
+                                    true,
+                                )
+                                .await?;
+
+                                // Return the credentials string for hashing
+                                Ok(credentials)
+                            }
+                        },
+                        config.debug,
+                    )
+                    .await?;
+
+                // Retry the task once
+                println!("🔄 Retrying task with refreshed credentials...");
+                let retry_result = docker_manager
+                    .run_claude_task(&claude_config, &run_options)
+                    .await?;
+
+                match retry_result {
+                    docker::TaskRunResult::Sync { output } => {
+                        let _ = output;
+
+                        // Update validation timestamp on successful retry
+                        if let Err(e) = sync_manager.update_validation_timestamp() {
+                            if config.debug {
+                                println!("⚠️  Warning: Failed to update validation timestamp: {e}");
+                            }
+                        }
+
+                        println!("✅ Claude task completed successfully after retry!");
+                        println!("   Task ID: {task_id}");
+                        println!("   Shared volume: {}", config.docker_config.volumes.home);
+                    }
+                    docker::TaskRunResult::Async {
+                        task_id: async_task_id,
+                        container_id,
+                    } => {
+                        let _ = async_task_id;
+                        println!("\n📋 Task is running in background (after retry)");
+                        println!("   Container ID: {container_id}");
+                        println!("   Monitor logs: docker logs -f {container_id}");
+                        println!("   Stop task: docker stop {container_id}");
+                        println!("   Clean up: docker rm {container_id}");
+                    }
+                }
+            } else {
+                // Not a credential error, propagate it
+                return Err(e);
+            }
+        }
+    }
 
     Ok(())
 }
@@ -2105,6 +2239,7 @@ async fn main() -> Result<()> {
             open_editor,
             ht_mcp_port,
             web_view_proxy_port,
+            async_mode,
         }) => {
             let debug_mode = cli.debug; // Use global debug flag
             let task_config = TaskRunConfig {
@@ -2120,11 +2255,13 @@ async fn main() -> Result<()> {
                 task_base_home_dir: &cli.task_base_home_dir,
                 open_editor,
                 ht_mcp_port,
-                web_view_proxy_port,
+                web_view_proxy_port: web_view_proxy_port
+                    .or(config.docker.default_web_view_proxy_port),
                 require_ht_mcp: cli.require_ht_mcp || config.global_option_defaults.require_ht_mcp,
                 docker_config: &config.docker,
                 claude_user_config: &config.claude_user_config,
                 worktree_config: &config.worktree,
+                async_mode,
             };
             run_claude_task(task_config).await?;
         }

@@ -2,17 +2,15 @@ group "default" {
   targets = ["claude-task-linux"]
 }
 
-group "with-ht-mcp" {
-  targets = ["claude-task-linux-with-ht-mcp"]
+# GitHub Container Registry targets
+group "ghcr" {
+  targets = ["claude-task-ghcr"]
 }
 
-# Default target - without ht-mcp (lightweight)
+# Default target
 target "claude-task-linux" {
   context = "."
   dockerfile = "docker/Dockerfile"
-  args = {
-    INCLUDE_HT_MCP = "false"
-  }
   tags = [
     "claude-task:latest",
     "claude-task:${DOCKER_TAG}"
@@ -21,21 +19,22 @@ target "claude-task-linux" {
   output = ["type=docker"]
 }
 
-# Target with ht-mcp included
-target "claude-task-linux-with-ht-mcp" {
-  context = "."
-  dockerfile = "docker/Dockerfile"
-  args = {
-    INCLUDE_HT_MCP = "true"
-  }
-  tags = [
-    "claude-task:latest-with-ht-mcp",
-    "claude-task:${DOCKER_TAG}-with-ht-mcp"
-  ]
-  platforms = ["linux/amd64", "linux/arm64"]
-  output = ["type=docker"]
-}
-
 variable "DOCKER_TAG" {
   default = "dev"
+}
+
+variable "VERSION" {
+  default = "0.1.0"
+}
+
+# GHCR target
+target "claude-task-ghcr" {
+  inherits = ["claude-task-linux"]
+  tags = [
+    "ghcr.io/onegrep/claude-task:latest",
+    "ghcr.io/onegrep/claude-task:v${VERSION}",
+    "ghcr.io/onegrep/claude-task:${DOCKER_TAG}"
+  ]
+  platforms = ["linux/amd64", "linux/arm64"]
+  output = ["type=registry"]
 }

@@ -16,7 +16,9 @@ use tracing_subscriber::{self, EnvFilter};
 use claude_task::permission::ApprovalToolPermission;
 
 // Import internal functions from the main module
-use crate::{check_worktree_status, clean_all_worktrees, create_git_worktree, remove_git_worktree};
+use crate::worktree::{
+    check_worktree_status, clean_all_worktrees, create_git_worktree, remove_git_worktree,
+};
 
 #[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct GlobalOptions {

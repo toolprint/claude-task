@@ -1,11 +1,6 @@
 use anyhow::{Context, Result};
 use clap::{CommandFactory, Parser, Subcommand};
-use dialoguer::Select;
-use regex::Regex;
-use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 // Include the generated MCP help text
 include!(concat!(env!("OUT_DIR"), "/mcp_help.rs"));
@@ -19,7 +14,11 @@ mod handle_config;
 mod mcp;
 pub mod permission;
 
+use claude_task::kube;
+use claude_task::worktree;
+use config::ExecutionEnvironment;
 use permission::ApprovalToolPermission;
+use std::process::Command;
 
 #[derive(Debug)]
 struct TaskRunConfig<'a> {
@@ -33,6 +32,7 @@ struct TaskRunConfig<'a> {
     skip_confirmation: bool,
     worktree_base_dir: &'a str,
     task_base_home_dir: &'a str,
+    branch_prefix: &'a str,
     open_editor: bool,
     ht_mcp_port: Option<u16>,
     web_view_proxy_port: Option<u16>,
@@ -41,6 +41,11 @@ struct TaskRunConfig<'a> {
     claude_user_config: &'a config::ClaudeUserConfig,
     worktree_config: &'a config::WorktreeConfig,
     async_mode: bool,
+    task_runner: &'a config::ExecutionEnvironment,
+    kube_config: &'a Option<config::KubeConfig>,
+    git_secret_name: Option<String>,
+    git_secret_key: Option<String>,
+    claude_credentials: &'a Option<config::ClaudeCredentials>,
 }
 
 use config::Config;
@@ -97,7 +102,7 @@ enum DockerCommands {
     Clean,
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Clone)]
 enum ConfigCommands {
     /// Create default config file
     #[command(visible_alias = "i")]
@@ -119,6 +124,26 @@ enum ConfigCommands {
     /// Check config file validity
     #[command(visible_alias = "v")]
     Validate,
+    /// Set the task runner (options: docker or kubernetes)
+    #[command(visible_alias = "r")]
+    Runner {
+        /// Task runner to use
+        #[arg(value_enum)]
+        runner: Option<ExecutionEnvironment>,
+    },
+    /// Set Claude OAuth token for authentication
+    #[command(visible_alias = "t")]
+    Token,
+}
+
+#[derive(Subcommand)]
+enum SetupCommands {
+    /// Setup Docker environment (volumes and credentials)
+    #[command(visible_alias = "d")]
+    Docker,
+    /// Setup Kubernetes environment (secrets and credentials)
+    #[command(visible_alias = "k")]
+    Kubernetes,
 }
 
 #[derive(Parser)]
@@ -157,7 +182,10 @@ struct Cli {
 enum Commands {
     /// Setup claude-task with your current environment
     #[command(visible_alias = "s")]
-    Setup,
+    Setup {
+        #[command(subcommand)]
+        command: SetupCommands,
+    },
     /// Git worktree management commands
     #[command(visible_alias = "wt")]
     Worktree {
@@ -170,7 +198,7 @@ enum Commands {
         #[command(subcommand)]
         command: DockerCommands,
     },
-    /// Run a Claude task in a local docker container
+    /// Run a Claude task in a local docker container or Kubernetes
     #[command(visible_alias = "r")]
     Run {
         /// The prompt to pass to Claude
@@ -205,6 +233,21 @@ enum Commands {
         /// Run task in background mode (returns immediately with container ID)
         #[arg(short = 'b', long = "background")]
         async_mode: bool,
+        /// Execution environment (docker or kubernetes). Overrides config setting
+        #[arg(long, value_enum)]
+        execution_env: Option<ExecutionEnvironment>,
+        /// Kubernetes namespace to use (overrides config)
+        #[arg(long)]
+        kube_namespace: Option<String>,
+        /// Kubernetes context to use (overrides config)
+        #[arg(long)]
+        kube_context: Option<String>,
+        /// Name of existing Kubernetes secret containing git credentials (default: git-credentials)
+        #[arg(long, value_name = "SECRET_NAME")]
+        git_secret_name: Option<String>,
+        /// Key within the secret containing the token (default: token)
+        #[arg(long, value_name = "KEY")]
+        git_secret_key: Option<String>,
     },
     /// Clean up both claude-task git worktrees and docker volumes
     #[command(visible_alias = "c")]
@@ -230,644 +273,422 @@ enum Commands {
     Version,
 }
 
-fn sanitize_branch_name(name: &str) -> String {
-    let re = Regex::new(r"[^a-zA-Z0-9\-_]").unwrap();
-    re.replace_all(name, "-").to_string()
-}
-
-fn find_git_repo_root(start_path: &Path) -> Result<PathBuf> {
-    let mut current = start_path;
-    loop {
-        if current.join(".git").exists() {
-            return Ok(current.to_path_buf());
-        }
-        match current.parent() {
-            Some(parent) => current = parent,
-            None => return Err(anyhow::anyhow!("No git repository found")),
-        }
+async fn run_claude_task(config: TaskRunConfig<'_>) -> Result<()> {
+    match config.task_runner {
+        ExecutionEnvironment::Docker => run_docker_task(config).await,
+        ExecutionEnvironment::Kubernetes => run_kube_task(config).await,
     }
 }
 
-fn get_repo_name(worktree_path: &Path) -> String {
-    // Try to get repo name from git remote
-    // Git handles worktrees automatically, so we can just run from the worktree path
-    if let Ok(output) = Command::new("git")
-        .args(["config", "--get", "remote.origin.url"])
-        .current_dir(worktree_path)
-        .output()
-    {
-        if output.status.success() {
-            let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
+async fn validate_kubernetes_access(context: &str) -> Result<()> {
+    // Check if kubectl is available
+    let kubectl_check = Command::new("kubectl")
+        .arg("version")
+        .arg("--client")
+        .output();
 
-            // Extract org/repo from URL
-            // Handle HTTPS format: https://github.com/org/repo.git
-            if url.starts_with("https://") || url.starts_with("http://") {
-                // Remove protocol and domain
-                let path_part = url
-                    .split("://")
-                    .nth(1)
-                    .and_then(|s| s.split('/').skip(1).collect::<Vec<_>>().join("/").into());
-
-                if let Some(path) = path_part {
-                    let clean_path = path.strip_suffix(".git").unwrap_or(&path);
-                    if clean_path.contains('/') {
-                        return clean_path.to_string();
-                    }
-                }
-            }
-
-            // Handle SSH format: git@github.com:org/repo.git
-            if let Some(repo_part) = url.split(':').nth(1) {
-                let clean_path = repo_part.strip_suffix(".git").unwrap_or(repo_part);
-                if clean_path.contains('/') {
-                    return clean_path.to_string();
-                }
-            }
-        }
+    if kubectl_check.is_err() || !kubectl_check.unwrap().status.success() {
+        return Err(anyhow::anyhow!("kubectl is not installed or not in PATH"));
     }
 
-    // Fallback to directory name
-    worktree_path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("unknown")
-        .to_string()
-}
-
-fn get_worktree_directory(worktree_base_dir: &str) -> Result<PathBuf> {
-    let worktree_dir = worktree_base_dir.to_string();
-
-    let worktree_path = if worktree_dir.starts_with('/') || worktree_dir.starts_with('~') {
-        // Absolute path or home directory path
-        if worktree_dir.starts_with('~') {
-            let home_dir = std::env::var("HOME").context("Could not find HOME directory")?;
-            PathBuf::from(worktree_dir.replacen('~', &home_dir, 1))
-        } else {
-            PathBuf::from(worktree_dir)
-        }
-    } else {
-        // Relative path - relative to current directory
-        std::env::current_dir()
-            .context("Could not get current directory")?
-            .join(worktree_dir)
-    };
-
-    fs::create_dir_all(&worktree_path)
-        .with_context(|| format!("Failed to create worktree directory: {worktree_path:?}"))?;
-    Ok(worktree_path)
-}
-
-fn create_git_worktree(
-    task_id: &str,
-    branch_prefix: &str,
-    worktree_base_dir: &str,
-) -> Result<(PathBuf, String)> {
-    let current_dir = std::env::current_dir().context("Could not get current directory")?;
-    let repo_root = find_git_repo_root(&current_dir)?;
-
-    let sanitized_name = sanitize_branch_name(task_id);
-    let branch_name = format!("{branch_prefix}{sanitized_name}");
-
-    let worktree_base_dir = get_worktree_directory(worktree_base_dir)?;
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let worktree_path = worktree_base_dir.join(format!("{sanitized_name}_{timestamp:x}"));
-
-    println!("Creating git worktree...");
-    println!("Repository root: {repo_root:?}");
-    println!("Branch name: {branch_name}");
-    println!("Worktree path: {worktree_path:?}");
-
-    // Create the worktree
-    let output = Command::new("git")
-        .args(["worktree", "add", "-b", &branch_name])
-        .arg(&worktree_path)
-        .current_dir(&repo_root)
+    // Check if the context exists and is accessible
+    let context_check = Command::new("kubectl")
+        .args(["config", "use-context", context])
         .output()
-        .context("Failed to execute git worktree command")?;
+        .context("Failed to run kubectl")?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(anyhow::anyhow!("Git worktree command failed: {}", stderr));
-    }
-
-    println!("✓ Git worktree created successfully");
-    println!("  Branch: {branch_name}");
-    println!("  Path: {worktree_path:?}");
-
-    Ok((worktree_path, branch_name))
-}
-
-fn list_git_worktrees(branch_prefix: &str) -> Result<()> {
-    let current_dir = std::env::current_dir().context("Could not get current directory")?;
-    let repo_root = find_git_repo_root(&current_dir)?;
-
-    println!("Listing git worktrees with branch prefix '{branch_prefix}'...");
-    println!("Repository root: {repo_root:?}");
-    println!();
-
-    let output = Command::new("git")
-        .args(["worktree", "list", "--porcelain"])
-        .current_dir(&repo_root)
-        .output()
-        .context("Failed to execute git worktree list command")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+    if !context_check.status.success() {
+        let stderr = String::from_utf8_lossy(&context_check.stderr);
         return Err(anyhow::anyhow!(
-            "Git worktree list command failed: {}",
+            "Failed to use context '{}': {}",
+            context,
             stderr
         ));
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let lines: Vec<&str> = stdout.lines().collect();
+    // Check if we can list jobs (basic permission check)
+    let permission_check = Command::new("kubectl")
+        .args(["auth", "can-i", "create", "jobs"])
+        .output()
+        .context("Failed to check permissions")?;
 
-    if lines.is_empty() {
-        println!("No worktrees found.");
-        return Ok(());
-    }
-
-    let mut current_worktree: Option<(String, String, String)> = None; // (path, head, branch)
-    let mut matching_worktrees = Vec::new();
-
-    for line in lines {
-        if line.starts_with("worktree ") {
-            // If we have a previous worktree, check if it matches and store it
-            if let Some((path, head, branch)) = current_worktree.take() {
-                if should_include_worktree(&branch, branch_prefix, &path, &repo_root) {
-                    matching_worktrees.push((path, head, branch));
-                }
-            }
-
-            // Start new worktree
-            let path = line.strip_prefix("worktree ").unwrap_or(line);
-            current_worktree = Some((path.to_string(), String::new(), String::new()));
-        } else if line.starts_with("HEAD ") {
-            if let Some((_, ref mut head, _)) = current_worktree.as_mut() {
-                let new_head = line.strip_prefix("HEAD ").unwrap_or(line);
-                *head = new_head.to_string();
-            }
-        } else if line.starts_with("branch ") {
-            if let Some((_, _, ref mut branch)) = current_worktree.as_mut() {
-                let new_branch = line.strip_prefix("branch ").unwrap_or(line);
-                *branch = new_branch.to_string();
-            }
-        } else if line == "bare" {
-            if let Some((_, _, ref mut branch)) = current_worktree.as_mut() {
-                *branch = "(bare)".to_string();
-            }
-        } else if line == "detached" {
-            if let Some((_, _, ref mut branch)) = current_worktree.as_mut() {
-                *branch = "(detached)".to_string();
-            }
-        }
-    }
-
-    // Handle the last worktree if it exists
-    if let Some((path, head, branch)) = current_worktree {
-        if should_include_worktree(&branch, branch_prefix, &path, &repo_root) {
-            matching_worktrees.push((path, head, branch));
-        }
-    }
-
-    // Print all matching worktrees
-    if matching_worktrees.is_empty() {
-        println!("No worktrees found matching branch prefix '{branch_prefix}'.");
-    } else {
-        for (path, head, branch) in matching_worktrees {
-            print_worktree_info(&path, &head, &branch);
-        }
+    if !permission_check.status.success() {
+        return Err(anyhow::anyhow!(
+            "You don't have permission to create jobs in the current context"
+        ));
     }
 
     Ok(())
 }
 
-fn should_include_worktree(
-    branch: &str,
-    branch_prefix: &str,
-    path: &str,
-    repo_root: &std::path::Path,
-) -> bool {
-    // Clean up branch name by removing refs/heads/ prefix for comparison
-    let clean_branch = if branch.starts_with("refs/heads/") {
-        branch.strip_prefix("refs/heads/").unwrap_or(branch)
-    } else {
-        branch
-    };
-
-    // Exclude the main repository directory (where .git folder is located)
-    let worktree_path = std::path::Path::new(path);
-    if worktree_path == repo_root {
-        return false;
-    }
-
-    // Only include branches that start with the prefix (exclude main/master unless they're actual worktrees)
-    clean_branch.starts_with(branch_prefix)
-        || branch == "(bare)"
-        || branch == "(detached)"
-        // Include main/master only if they are actual worktrees (not the main repo)
-        || ((clean_branch == "main" || clean_branch == "master") && worktree_path != repo_root)
-}
-
-fn print_worktree_info(path: &str, head: &str, branch: &str) {
-    let path_buf = PathBuf::from(path);
-    let dir_name = path_buf
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("unknown");
-
-    // Clean up branch name by removing refs/heads/ prefix
-    let clean_branch = if branch.starts_with("refs/heads/") {
-        branch.strip_prefix("refs/heads/").unwrap_or(branch)
-    } else if branch.is_empty() {
-        "unknown"
-    } else {
-        branch
-    };
-
-    // Determine if this is a Claude task worktree
-    let is_claude_task = clean_branch.starts_with("claude-task/");
-    let icon = if is_claude_task { "🌿" } else { "📁" };
-    let type_label = if is_claude_task {
-        " (Claude task)"
-    } else {
-        " (worktree)"
-    };
-
-    // Get repository name
-    let repo_name = get_repo_name(&path_buf);
-
-    // Check worktree status
-    println!("{icon} {dir_name}{type_label}");
-    println!("   Path: {path}");
-    println!("   Repository: {repo_name}");
-    println!("   Branch: {clean_branch}");
-    println!(
-        "   HEAD: {}",
-        if head.len() > 7 { &head[..7] } else { head }
-    );
-
-    match check_worktree_status(&path_buf) {
-        Ok(status) => {
-            let status_icon = status.get_status_icon();
-            let details = status.get_status_details();
-
-            if status.is_clean() {
-                if status.is_likely_merged {
-                    let merge_type = status.merge_info.as_deref().unwrap_or("merged");
-                    println!("   Status: {status_icon} Clean ({merge_type})");
-                } else {
-                    println!("   Status: {status_icon} Clean");
-                }
-            } else {
-                println!("   Status: {status_icon} Unclean: {}", details.join(", "));
-
-                // Show merge info if detected
-                if status.is_likely_merged {
-                    if let Some(ref info) = status.merge_info {
-                        println!(
-                            "   Note: Branch appears to be {info} - remote may have been deleted"
-                        );
-                    }
-                }
-
-                // Show changed files if any
-                if !status.changed_files.is_empty() {
-                    println!("   Changed files:");
-                    for file in &status.changed_files {
-                        println!("     - {file}");
-                    }
-                }
-
-                // Show untracked files if any
-                if !status.untracked_files.is_empty() {
-                    println!("   Untracked files:");
-                    for file in &status.untracked_files {
-                        println!("     - {file}");
-                    }
-                }
-
-                // Show unpushed commits if any
-                if !status.unpushed_commits.is_empty() && !status.is_likely_merged {
-                    println!("   Unpushed commits:");
-                    for (commit_id, message) in &status.unpushed_commits {
-                        println!("     - {commit_id} {message}");
-                    }
-                } else if !status.unpushed_commits.is_empty() && status.is_likely_merged {
-                    println!("   Commits (likely already merged):");
-                    for (commit_id, message) in &status.unpushed_commits {
-                        println!("     - {commit_id} {message}");
-                    }
-                }
-            }
-        }
-        Err(_) => {
-            println!("   Status: ❓ Status unknown");
-        }
-    };
-
-    println!();
-}
-
-fn remove_git_worktree(task_id: &str, branch_prefix: &str, auto_clean_branch: bool) -> Result<()> {
-    let current_dir = std::env::current_dir().context("Could not get current directory")?;
-    let repo_root = find_git_repo_root(&current_dir)?;
-
-    let sanitized_id = sanitize_branch_name(task_id);
-    let branch_name = format!("{branch_prefix}{sanitized_id}");
-
-    println!("Removing git worktree for task '{task_id}'...");
-    println!("Repository root: {repo_root:?}");
-    println!("Target branch: {branch_name}");
-    println!();
-
-    // First, get list of worktrees to find the one with matching branch
+fn get_git_remote_url(path: &Path) -> Result<String> {
     let output = Command::new("git")
-        .args(["worktree", "list", "--porcelain"])
-        .current_dir(&repo_root)
+        .args(["config", "--get", "remote.origin.url"])
+        .current_dir(path)
         .output()
-        .context("Failed to execute git worktree list command")?;
+        .context("Failed to get git remote URL")?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(anyhow::anyhow!(
-            "Git worktree list command failed: {}",
-            stderr
+            "No git remote found. Please ensure this is a git repository with a remote."
         ));
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let lines: Vec<&str> = stdout.lines().collect();
-
-    let mut worktree_path: Option<String> = None;
-    let mut current_path: Option<String> = None;
-
-    for line in lines {
-        if line.starts_with("worktree ") {
-            current_path = Some(line.strip_prefix("worktree ").unwrap_or(line).to_string());
-        } else if line.starts_with("branch ") {
-            let branch = line.strip_prefix("branch ").unwrap_or(line);
-            let clean_branch = if branch.starts_with("refs/heads/") {
-                branch.strip_prefix("refs/heads/").unwrap_or(branch)
-            } else {
-                branch
-            };
-
-            if clean_branch == branch_name {
-                worktree_path = current_path.clone();
-                break;
-            }
-        }
+    let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if url.is_empty() {
+        return Err(anyhow::anyhow!("Git remote URL is empty"));
     }
 
-    let worktree_path = match worktree_path {
-        Some(path) => path,
-        None => {
-            println!("❌ No worktree found for branch '{branch_name}'");
+    Ok(url)
+}
+
+/// Get GitHub token from environment or gh CLI
+fn get_github_token() -> Option<String> {
+    // First try environment variable
+    if let Ok(token) = std::env::var("GITHUB_TOKEN") {
+        return Some(token);
+    }
+
+    // Try to get from gh CLI
+    match Command::new("gh").args(["auth", "token"]).output() {
+        Ok(output) if output.status.success() => {
+            let token = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !token.is_empty() {
+                return Some(token);
+            }
+        }
+        _ => {}
+    }
+
+    None
+}
+
+async fn run_kube_task(config: TaskRunConfig<'_>) -> Result<()> {
+    let kube_config = config.kube_config.as_ref().ok_or_else(|| {
+        anyhow::anyhow!("Kubernetes execution environment requires a kube_config")
+    })?;
+
+    // Determine context and namespace (similar logic to setup)
+    let context = kube_config
+        .context
+        .clone()
+        .or_else(config::Config::get_current_kube_context)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "No Kubernetes context specified and could not detect current context. \
+        Please specify a context in config.json or ensure kubectl is configured."
+            )
+        })?;
+
+    let namespace = kube_config.namespace.clone().unwrap_or_else(|| {
+        let suffix = config::Config::generate_namespace_suffix();
+        format!("claude-task-{suffix}")
+    });
+
+    let task_id = config
+        .task_id
+        .clone()
+        .unwrap_or_else(worktree::generate_short_id);
+
+    println!("Running Claude task in Kubernetes with ID: {task_id}");
+
+    // Validate Kubernetes connectivity
+    println!("🔍 Checking Kubernetes cluster connectivity...");
+    if let Err(e) = validate_kubernetes_access(&context).await {
+        return Err(anyhow::anyhow!("Failed to connect to Kubernetes cluster: {}\n\nPlease ensure:\n1. kubectl is installed\n2. You have a valid kubeconfig\n3. The context '{}' exists\n4. You have permissions to create jobs in namespace '{}'", 
+            e, context, namespace));
+    }
+
+    // Check if this is an auto-generated namespace and show confirmation if needed
+    let needs_confirmation = kube_config.context.is_none() || kube_config.namespace.is_none();
+    if needs_confirmation && !kube_config.namespace_confirmed {
+        use dialoguer::Confirm;
+
+        println!("🚀 Kubernetes Task Confirmation");
+        println!();
+        println!("This task will run in:");
+        println!("   Context: {context}");
+        println!("   Namespace: {namespace} (will be created if it doesn't exist)");
+        println!();
+        println!("⚠️  Please ensure you have appropriate permissions in this cluster.");
+        println!();
+
+        let confirmed = Confirm::new()
+            .with_prompt("Do you want to proceed with this task?")
+            .default(false)
+            .interact()?;
+
+        if !confirmed {
+            println!("Task cancelled.");
             return Ok(());
         }
+
+        // Update the config to remember this confirmation
+        let config_path = Config::default_config_path();
+        let mut full_config = Config::load(Some(&config_path))?;
+        if let Some(ref mut kc) = full_config.kube_config {
+            kc.context = Some(context.clone());
+            kc.namespace = Some(namespace.clone());
+            kc.namespace_confirmed = true;
+        }
+        full_config.save(&config_path)?;
+        println!("✓ Configuration saved");
+        println!();
+    }
+
+    // Create Kubernetes client and ensure namespace exists
+    println!("🔧 Creating Kubernetes runner...");
+    let k8s_runner = kube::KubernetesJobRunner::new()
+        .await
+        .context("Failed to connect to Kubernetes cluster")?;
+
+    // Ensure namespace exists before any operations
+    println!("📁 Ensuring namespace '{namespace}' exists...");
+    k8s_runner.create_namespace(&namespace).await?;
+
+    // Ensure image pull secret exists for GHCR images
+    if kube_config.image.contains("ghcr.io") {
+        let pull_secret_name = kube_config
+            .image_pull_secret
+            .clone()
+            .unwrap_or_else(|| "ghcr-pull-secret".to_string());
+
+        println!("🔐 Ensuring image pull secret '{pull_secret_name}' exists for GHCR...");
+
+        // Check if we have GitHub token from environment or gh CLI
+        if let Some(github_token) = get_github_token() {
+            // Try to get username from GITHUB_USERNAME or fall back to system username
+            let github_username = std::env::var("GITHUB_USERNAME")
+                .or_else(|_| std::env::var("USER"))
+                .unwrap_or_else(|_| "unknown".to_string());
+
+            println!("   Using GitHub username: {github_username}");
+            println!(
+                "   Token source: {}",
+                if std::env::var("GITHUB_TOKEN").is_ok() {
+                    "GITHUB_TOKEN env var"
+                } else {
+                    "gh CLI"
+                }
+            );
+            k8s_runner
+                .create_docker_registry_secret(
+                    &namespace,
+                    &pull_secret_name,
+                    "ghcr.io",
+                    &github_username,
+                    &github_token,
+                )
+                .await?;
+        } else {
+            println!("   ⚠️  No GitHub token found");
+            println!("   To pull from GHCR, you need to either:");
+            println!("   1. Set environment variable: export GITHUB_TOKEN=your-token");
+            println!("   2. Login with gh CLI: gh auth login");
+            println!(
+                "   Or create the secret manually: kubectl create secret docker-registry {pull_secret_name} \\"
+            );
+            println!("     --docker-server=ghcr.io \\");
+            println!("     --docker-username=YOUR_GITHUB_USERNAME \\");
+            println!("     --docker-password=YOUR_GITHUB_TOKEN \\");
+            println!("     -n {namespace}");
+        }
+
+        // Also update the saved config if it wasn't set
+        if kube_config.image_pull_secret.is_none() {
+            let config_path = Config::default_config_path();
+            let mut full_config = Config::load(Some(&config_path))?;
+            if let Some(ref mut kc) = full_config.kube_config {
+                kc.image_pull_secret = Some(pull_secret_name.clone());
+            }
+            full_config.save(&config_path)?;
+            println!("   ✓ Updated config with image pull secret name");
+        }
+    }
+
+    // Ensure git credentials secret exists
+    println!(
+        "🔑 Ensuring git credentials secret '{}' exists...",
+        kube_config.git_secret_name
+    );
+    if let Some(github_token) = get_github_token() {
+        println!(
+            "   Token source: {}",
+            if std::env::var("GITHUB_TOKEN").is_ok() {
+                "GITHUB_TOKEN env var"
+            } else {
+                "gh CLI"
+            }
+        );
+        k8s_runner
+            .create_git_secret(
+                &namespace,
+                &kube_config.git_secret_name,
+                &kube_config.git_secret_key,
+                &github_token,
+            )
+            .await?;
+    } else {
+        println!("   ⚠️  No GitHub token found to create git credentials secret");
+        println!("   The job may fail if the repository is private.");
+        println!("   To provide credentials:");
+        println!("   1. Set GITHUB_TOKEN environment variable");
+        println!("   2. Login with gh CLI: gh auth login");
+        println!("   3. Create the secret manually:");
+        println!(
+            "      kubectl create secret generic {} \\",
+            kube_config.git_secret_name
+        );
+        println!(
+            "        --from-literal={}=YOUR_GITHUB_TOKEN \\",
+            kube_config.git_secret_key
+        );
+        println!("        -n {namespace}");
+    }
+
+    // Note features not available in K8s mode
+    if config.workspace_dir.is_some() {
+        println!("⚠️  Note: Custom workspace directory is not supported in Kubernetes mode");
+    }
+    if config.ht_mcp_port.is_some() || config.web_view_proxy_port.is_some() {
+        println!("⚠️  Note: Port forwarding is not supported in Kubernetes mode");
+    }
+    if config.open_editor {
+        println!("⚠️  Note: Opening editor is not supported in Kubernetes mode");
+    }
+
+    // Get current git repository info
+    let current_dir = std::env::current_dir().context("Could not get current directory")?;
+
+    // Get git remote URL
+    let git_remote_url = get_git_remote_url(&current_dir)?;
+
+    // Check if it's a private repository
+    if git_remote_url.contains("github.com") && !git_remote_url.contains("github.com/") {
+        println!("⚠️  Note: Your repository appears to be private.");
+        println!("   Make sure to create the git credentials secret as shown above.");
+    }
+
+    // Generate branch name similar to worktree mode
+    let branch_name = format!("{}{}", config.branch_prefix, task_id);
+
+    // Prepare approval tool permission
+    let approval_permission = config.approval_tool_permission.clone();
+
+    // Always use the configured git credentials secret
+    let secret_name = config
+        .git_secret_name
+        .as_ref()
+        .unwrap_or(&kube_config.git_secret_name);
+    let secret_key = config
+        .git_secret_key
+        .as_ref()
+        .unwrap_or(&kube_config.git_secret_key);
+
+    // Check if git credentials secret exists
+    println!("🔍 Checking for git credentials secret '{secret_name}'...");
+
+    // The secret should have been created during setup
+    // JobConfig will validate it exists before running
+
+    // Determine the image pull secret to use
+    let image_pull_secret = if kube_config.image.contains("ghcr.io") {
+        kube_config
+            .image_pull_secret
+            .clone()
+            .or_else(|| Some("ghcr-pull-secret".to_string()))
+    } else {
+        kube_config.image_pull_secret.clone()
     };
 
-    println!("Found worktree: {worktree_path}");
+    // Create Kubernetes job configuration
+    let job_config = kube::JobConfig {
+        name: format!("claude-task-{task_id}"),
+        namespace: namespace.clone(),
+        git_repo: git_remote_url,
+        git_branch: Some(branch_name.clone()),
+        secret_name: secret_name.clone(),
+        secret_key: secret_key.clone(),
+        claude_prompt: config.prompt.to_string(),
+        claude_permission_tool: approval_permission.clone(),
+        claude_mcp_config: config.mcp_config.clone(),
+        claude_debug: config.debug,
+        claude_skip_permissions: approval_permission.is_none() && config.skip_confirmation,
+        image: Some(kube_config.image.clone()),
+        image_pull_secret,
+        async_mode: config.async_mode,
+        timeout_seconds: Some(600), // 10 minutes default
+        oauth_token: config.claude_credentials.as_ref().map(|c| c.token.clone()),
+    };
 
-    // Remove the worktree
-    println!("Removing worktree...");
-    let output = Command::new("git")
-        .args(["worktree", "remove", &worktree_path, "--force"])
-        .current_dir(&repo_root)
-        .output()
-        .context("Failed to execute git worktree remove command")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(anyhow::anyhow!(
-            "Git worktree remove command failed: {}",
-            stderr
-        ));
-    }
-
-    println!("✓ Worktree removed: {worktree_path}");
-
-    // Delete the branch if auto_clean_branch is enabled
-    if auto_clean_branch {
-        println!("Deleting branch '{branch_name}'...");
-        let output = Command::new("git")
-            .args(["branch", "-D", &branch_name])
-            .current_dir(&repo_root)
-            .output()
-            .context("Failed to execute git branch delete command")?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            println!("⚠️  Warning: Failed to delete branch '{branch_name}': {stderr}");
-            println!("   You may need to delete it manually with: git branch -D {branch_name}");
-        } else {
-            println!("✓ Branch deleted: {branch_name}");
-        }
-    } else {
-        println!("ℹ️  Branch '{branch_name}' was kept (auto clean disabled)");
-    }
-
-    println!();
-    println!("✅ Cleanup complete for task '{task_id}'");
-
-    Ok(())
-}
-
-async fn init_shared_volumes(
-    refresh_credentials: bool,
-    task_base_home_dir: &str,
-    debug: bool,
-    docker_config: &config::DockerConfig,
-    claude_user_config: &config::ClaudeUserConfig,
-) -> Result<()> {
-    println!("Initializing shared Docker volumes for Claude tasks...");
-    if debug {
-        println!("🔍 Refresh credentials: {refresh_credentials}");
-        println!("🔍 Task base home dir: {task_base_home_dir}");
-    }
+    // Run the job
+    println!("🚀 Starting Kubernetes Claude task...");
+    println!("   Job name: {}", job_config.name);
+    println!("   Repository: {}", job_config.git_repo);
+    println!(
+        "   Branch: {}",
+        job_config
+            .git_branch
+            .as_ref()
+            .unwrap_or(&"main".to_string())
+    );
+    println!("   Namespace: {}", job_config.namespace);
     println!();
 
-    // Create Docker manager
-    let docker_manager =
-        DockerManager::new(docker_config.clone()).context("Failed to create Docker manager")?;
+    match k8s_runner.run_job(job_config).await {
+        Ok(result) => {
+            match result {
+                kube::JobResult::Sync {
+                    stdout,
+                    stderr,
+                    exit_code,
+                } => {
+                    // Print the output
+                    if !stdout.is_empty() {
+                        println!("\n=== JOB OUTPUT ===");
+                        println!("{stdout}");
+                    }
 
-    // Create cache volumes (npm and node)
-    println!("Creating cache volumes...");
-    let dummy_config = ClaudeTaskConfig::default();
-    docker_manager.create_volumes(&dummy_config).await?;
+                    if !stderr.is_empty() {
+                        eprintln!("\n=== STDERR ===");
+                        eprintln!("{stderr}");
+                    }
 
-    // Run setup if requested
-    if refresh_credentials {
-        println!("Refreshing credentials...");
-        setup_credentials_and_config(task_base_home_dir, debug, claude_user_config).await?;
+                    if exit_code == Some(0) {
+                        println!("\n✨ Claude task completed successfully in Kubernetes!");
+                        println!("   Branch created: {branch_name}");
+                        println!(
+                            "   You can check out the branch with: git fetch && git checkout {branch_name}"
+                        );
+                    } else {
+                        return Err(anyhow::anyhow!(
+                            "Claude task failed with exit code: {:?}",
+                            exit_code
+                        ));
+                    }
+                }
+                kube::JobResult::Async {
+                    job_name,
+                    namespace,
+                } => {
+                    println!("\n✨ Claude task started in Kubernetes!");
+                    println!("   Job: {job_name}");
+                    println!("   Namespace: {namespace}");
+                    println!("   Branch: {branch_name}");
+                    // The monitoring commands are already printed by the kube module
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("\n❌ Kubernetes job failed: {e:#}");
+            return Err(e);
+        }
     }
-
-    println!();
-    println!("✅ All shared volumes are ready:");
-    println!(
-        "   - {} (credentials and config)",
-        docker_config.volumes.home
-    );
-    println!(
-        "   - {} (shared npm cache)",
-        docker_config.volumes.npm_cache
-    );
-    println!(
-        "   - {} (shared node cache)",
-        docker_config.volumes.node_cache
-    );
 
     Ok(())
 }
 
-fn generate_short_id() -> String {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-
-    let mut hasher = DefaultHasher::new();
-    timestamp.hash(&mut hasher);
-
-    // Get a short hash and format as hex
-    format!("{:x}", hasher.finish())[..8].to_string()
-}
-
-fn open_ide_in_path(path: &str, ide: &str) -> Result<()> {
-    println!("🚀 Opening {ide} in {path}...");
-
-    let output = Command::new(ide)
-        .arg(path)
-        .output()
-        .with_context(|| format!("Failed to execute {ide} command"))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(anyhow::anyhow!(
-            "Failed to open {} with {}: {}",
-            path,
-            ide,
-            stderr
-        ));
-    }
-
-    println!("✓ {ide} opened successfully");
-    Ok(())
-}
-
-fn open_worktree(path: &str, default_open_command: Option<&str>) -> Result<()> {
-    if let Some(cmd) = default_open_command {
-        // Parse the command and arguments
-        let parts: Vec<&str> = cmd.split_whitespace().collect();
-        if parts.is_empty() {
-            return Err(anyhow::anyhow!("Empty open command"));
-        }
-
-        println!("🚀 Opening with custom command: {cmd} {path}");
-
-        let mut command = Command::new(parts[0]);
-        for arg in &parts[1..] {
-            command.arg(arg);
-        }
-        command.arg(path);
-
-        let output = command
-            .output()
-            .with_context(|| format!("Failed to execute custom command: {}", parts[0]))?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(anyhow::anyhow!(
-                "Failed to open {} with {}: {}",
-                path,
-                cmd,
-                stderr
-            ));
-        }
-
-        println!("✓ Opened successfully");
-        Ok(())
-    } else {
-        // Default to cursor
-        open_ide_in_path(path, "cursor")
-    }
-}
-
-fn select_worktree_interactively(
-    branch_prefix: &str,
-    default_open_command: Option<&str>,
-) -> Result<()> {
-    println!("🌿 Finding available worktrees...");
-    let worktrees = get_matching_worktrees(branch_prefix)?;
-
-    if worktrees.is_empty() {
-        println!("No claude-task worktrees found matching prefix '{branch_prefix}'.");
-        println!("Create a new worktree with: ct worktree create <task-id>");
-        return Ok(());
-    }
-
-    // Filter to only claude-task worktrees and create display options
-    let claude_worktrees: Vec<_> = worktrees
-        .into_iter()
-        .filter(|(_, _, branch)| {
-            let clean_branch = if branch.starts_with("refs/heads/") {
-                branch.strip_prefix("refs/heads/").unwrap_or(branch)
-            } else {
-                branch
-            };
-            clean_branch.starts_with(branch_prefix)
-        })
-        .collect();
-
-    if claude_worktrees.is_empty() {
-        println!("No claude-task worktrees found.");
-        println!("Create a new worktree with: ct worktree create <task-id>");
-        return Ok(());
-    }
-
-    // Create display options for the menu
-    let mut options = Vec::new();
-    for (path, _head, branch) in &claude_worktrees {
-        let clean_branch = if branch.starts_with("refs/heads/") {
-            branch.strip_prefix("refs/heads/").unwrap_or(branch)
-        } else {
-            branch
-        };
-
-        let path_buf = PathBuf::from(path);
-        let dir_name = path_buf
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("unknown");
-
-        let display_name = format!("{dir_name} ({clean_branch})");
-        options.push(display_name);
-    }
-
-    let selection = Select::new()
-        .with_prompt("Select a worktree to open")
-        .default(0)
-        .items(&options)
-        .interact()
-        .context("Failed to get selection")?;
-
-    let selected_worktree = &claude_worktrees[selection];
-    let worktree_path = &selected_worktree.0;
-
-    println!("Selected: {}", options[selection]);
-    open_worktree(worktree_path, default_open_command)?;
-
-    Ok(())
-}
-
-async fn run_claude_task(config: TaskRunConfig<'_>) -> Result<()> {
+async fn run_docker_task(config: TaskRunConfig<'_>) -> Result<()> {
     if config.debug {
         println!("🔍 Debug mode enabled");
         println!("📝 Task parameters:");
@@ -889,7 +710,7 @@ async fn run_claude_task(config: TaskRunConfig<'_>) -> Result<()> {
 
     // Validate MCP config file if provided
     let validated_mcp_config = if let Some(mcp_path) = config.mcp_config {
-        let mcp_config_path = if Path::new(&mcp_path).is_absolute() {
+        let mcp_config_path = if std::path::Path::new(&mcp_path).is_absolute() {
             PathBuf::from(mcp_path)
         } else {
             current_dir.join(mcp_path)
@@ -913,7 +734,7 @@ async fn run_claude_task(config: TaskRunConfig<'_>) -> Result<()> {
 
     // Handle approval tool permission configuration FIRST, before any setup
     let (permission_tool_arg, skip_permissions) = match config.approval_tool_permission {
-        Some(tool) => (tool, false),
+        Some(tool) => (tool.clone(), false),
         None => {
             // Show warning and request confirmation
             println!("⚠️  WARNING: No approval tool permission specified!");
@@ -977,7 +798,7 @@ async fn run_claude_task(config: TaskRunConfig<'_>) -> Result<()> {
     // Generate or use provided task ID
     let task_id = match config.task_id {
         Some(id) => id,
-        None => generate_short_id(),
+        None => worktree::generate_short_id(),
     };
 
     println!("Running Claude task with ID: {task_id}");
@@ -996,7 +817,7 @@ async fn run_claude_task(config: TaskRunConfig<'_>) -> Result<()> {
                 ));
             }
             println!("📁 Using custom workspace directory: {custom_dir}");
-            custom_dir
+            custom_dir.clone()
         }
         Some(None) => {
             // --workspace-dir provided without value, use current directory
@@ -1007,12 +828,12 @@ async fn run_claude_task(config: TaskRunConfig<'_>) -> Result<()> {
             // Default: Create worktree
             println!("🌿 Creating git worktree for task...");
             let (worktree_path, branch_name) =
-                create_git_worktree(&task_id, "claude-task/", config.worktree_base_dir)?;
+                worktree::create_git_worktree(&task_id, "claude-task/", config.worktree_base_dir)?;
             println!("✓ Worktree created: {worktree_path:?} (branch: {branch_name})");
 
             // Open IDE if requested
             if config.open_editor {
-                if let Err(e) = open_worktree(
+                if let Err(e) = worktree::open_worktree(
                     &worktree_path.to_string_lossy(),
                     config.worktree_config.default_open_command.as_deref(),
                 ) {
@@ -1047,58 +868,80 @@ async fn run_claude_task(config: TaskRunConfig<'_>) -> Result<()> {
             "🔧 {} volume not found, running setup...",
             config.docker_config.volumes.home
         );
-        setup_credentials_and_config(
-            config.task_base_home_dir,
-            config.debug,
-            config.claude_user_config,
-        )
-        .await?;
-        println!();
-    } else {
-        // Volume exists, use credential sync manager to handle synchronization
-        if config.debug {
-            println!("✓ {} volume found", config.docker_config.volumes.home);
-            println!("🔍 Checking credential synchronization...");
-        }
 
-        // Create sync manager
-        let sync_manager =
-            credential_sync::CredentialSyncManager::new(config.task_base_home_dir, &task_id)?;
-
-        // Sync credentials if needed with lock mechanism
-        let synced = sync_manager
-            .sync_credentials_if_needed(
-                || {
-                    let task_base_home_dir = config.task_base_home_dir.to_string();
-                    let debug = config.debug;
-                    let claude_user_config = config.claude_user_config.clone();
-
-                    async move {
-                        // Extract credentials directly
-                        let credentials = credentials::extract_keychain_credentials().await?;
-
-                        // Setup the full configuration (including writing the credentials)
-                        setup_credentials_and_config_with_cache(
-                            &task_base_home_dir,
-                            debug,
-                            &claude_user_config,
-                            true,
-                        )
-                        .await?;
-
-                        // Return the credentials string for hashing
-                        Ok(credentials)
-                    }
-                },
+        // Check if we have a token configured
+        if let Some(_credentials) = config.claude_credentials {
+            // Token-based auth: create minimal setup without credential extraction
+            handle_docker_setup(
+                config.task_base_home_dir,
                 config.debug,
+                config.claude_user_config,
+                config.claude_credentials,
             )
             .await?;
+        } else {
+            // Traditional setup with credential extraction
+            setup_credentials_and_config(
+                config.task_base_home_dir,
+                config.debug,
+                config.claude_user_config,
+            )
+            .await?;
+        }
+        println!();
+    } else {
+        // Volume exists
+        if config.debug {
+            println!("✓ {} volume found", config.docker_config.volumes.home);
+        }
 
-        if synced {
-            println!("🔄 Credentials synchronized successfully");
-            println!();
+        // Only sync credentials if not using token auth
+        if config.claude_credentials.is_none() {
+            if config.debug {
+                println!("🔍 Checking credential synchronization...");
+            }
+
+            // Create sync manager
+            let sync_manager =
+                credential_sync::CredentialSyncManager::new(config.task_base_home_dir, &task_id)?;
+
+            // Sync credentials if needed with lock mechanism
+            let synced = sync_manager
+                .sync_credentials_if_needed(
+                    || {
+                        let task_base_home_dir = config.task_base_home_dir.to_string();
+                        let debug = config.debug;
+                        let claude_user_config = config.claude_user_config.clone();
+
+                        async move {
+                            // Extract credentials directly
+                            let credentials = credentials::extract_keychain_credentials().await?;
+
+                            // Setup the full configuration (including writing the credentials)
+                            setup_credentials_and_config_with_cache(
+                                &task_base_home_dir,
+                                debug,
+                                &claude_user_config,
+                                true,
+                            )
+                            .await?;
+
+                            // Return the credentials string for hashing
+                            Ok(credentials)
+                        }
+                    },
+                    config.debug,
+                )
+                .await?;
+
+            if synced {
+                println!("🔄 Credentials synchronized successfully");
+                println!();
+            } else if config.debug {
+                println!("✓ Credentials recently validated, skipping sync");
+            }
         } else if config.debug {
-            println!("✓ Credentials recently validated, skipping sync");
+            println!("✓ Using token authentication, skipping credential sync");
         }
     }
 
@@ -1221,6 +1064,7 @@ async fn run_claude_task(config: TaskRunConfig<'_>) -> Result<()> {
         mcp_config: validated_mcp_config.clone(),
         skip_permissions,
         async_mode: config.async_mode,
+        oauth_token: config.claude_credentials.as_ref().map(|c| c.token.clone()),
     };
 
     let result = docker_manager
@@ -1346,888 +1190,334 @@ async fn run_claude_task(config: TaskRunConfig<'_>) -> Result<()> {
     Ok(())
 }
 
-async fn list_docker_volumes(docker_config: &config::DockerConfig) -> Result<()> {
-    println!("📦 Listing Claude task Docker volumes...");
-
-    let docker_manager =
-        DockerManager::new(docker_config.clone()).context("Failed to create Docker manager")?;
-
-    let volumes = docker_manager.list_claude_volumes().await?;
-
-    if volumes.is_empty() {
-        println!("No Claude task volumes found.");
-    } else {
-        println!("Found {} Claude task volumes:", volumes.len());
-        for (name, size) in volumes {
-            println!("  📁 {name} ({size})");
-        }
-    }
-
-    Ok(())
-}
-
-async fn clean_shared_volumes(debug: bool, docker_config: &config::DockerConfig) -> Result<()> {
-    println!("🧹 Cleaning all shared Docker volumes...");
-    if debug {
-        println!("🔍 Will remove all three shared volumes");
-    }
-    println!();
-
-    let volume_names = vec![
-        &docker_config.volumes.home,
-        &docker_config.volumes.npm_cache,
-        &docker_config.volumes.node_cache,
-    ];
-
-    for volume_name in &volume_names {
-        let output = Command::new("docker")
-            .args(["volume", "rm", volume_name])
-            .output()
-            .context("Failed to execute docker volume rm command")?;
-
-        if output.status.success() {
-            println!("✓ Volume '{volume_name}' removed");
-        } else {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            if stderr.contains("no such volume") {
-                println!("⚠️  Volume '{volume_name}' not found");
-            } else {
-                eprintln!("❌ Failed to remove volume '{volume_name}': {stderr}");
-            }
-        }
-    }
-
-    println!();
-    println!("✅ Shared volume cleanup completed");
-    println!("   All Claude task volumes have been removed");
-
-    Ok(())
-}
-
-async fn clean_all_worktrees(
-    branch_prefix: &str,
-    skip_confirmation: bool,
-    force: bool,
-    auto_clean_branch: bool,
-) -> Result<()> {
-    println!("🧹 Finding all worktrees to clean up...");
-    println!("Branch prefix: '{branch_prefix}'");
-    println!();
-
-    // Get list of worktrees
-    let worktrees = get_matching_worktrees(branch_prefix)?;
-
-    if worktrees.is_empty() {
-        println!("No worktrees found matching branch prefix '{branch_prefix}'.");
-        return Ok(());
-    }
-
-    // Check cleanliness of each worktree
-    let mut worktree_status_list = Vec::new();
-    let mut clean_count = 0;
-    let mut unclean_count = 0;
-
-    for (path, head, branch) in &worktrees {
-        let path_buf = PathBuf::from(path);
-        let status = check_worktree_status(&path_buf).ok();
-
-        if let Some(ref s) = status {
-            if s.is_clean() {
-                clean_count += 1;
-            } else {
-                unclean_count += 1;
-            }
-        }
-
-        worktree_status_list.push((path.clone(), head.clone(), branch.clone(), status));
-    }
-
-    // Display what will be cleaned
-    println!("📋 Found {} worktrees:", worktree_status_list.len());
-    println!("   ✅ {clean_count} clean");
-    println!("   ⚠️  {unclean_count} unclean");
-    println!();
-
-    for (i, (path, _, branch, status)) in worktree_status_list.iter().enumerate() {
-        let clean_branch = if branch.starts_with("refs/heads/") {
-            branch.strip_prefix("refs/heads/").unwrap_or(branch)
-        } else {
-            branch
-        };
-
-        let (status_icon, cleanup_indicator) = if let Some(s) = status {
-            if s.is_clean() {
-                (
-                    "✅",
-                    if force || unclean_count == 0 {
-                        ""
-                    } else {
-                        " (will clean)"
-                    },
-                )
-            } else if force {
-                ("⚠️", " (will force clean)")
-            } else {
-                ("⚠️", "")
-            }
-        } else {
-            ("❓", "")
-        };
-
-        print!("  {}. Branch: {} (Path: {})", i + 1, clean_branch, path);
-
-        if let Some(s) = status {
-            if s.is_clean() {
-                print!(" {status_icon} Clean{cleanup_indicator}");
-            } else {
-                let details = s.get_status_details();
-                print!(
-                    " {status_icon} Unclean: {}{cleanup_indicator}",
-                    details.join(", ")
-                );
-            }
-        } else {
-            print!(" {status_icon} Status unknown");
-        }
-
-        println!();
-    }
-
-    // Determine what we're going to clean
-    let (worktrees_to_clean, action_description) = if force {
-        (
-            worktree_status_list.len(),
-            "all worktrees (including unclean ones)",
-        )
-    } else if unclean_count > 0 {
-        (clean_count, "clean worktrees only")
-    } else {
-        (clean_count, "all worktrees")
-    };
-
-    if worktrees_to_clean == 0 {
-        println!();
-        println!("ℹ️  No clean worktrees to remove.");
-        if unclean_count > 0 {
-            println!("   Use --force flag to remove unclean worktrees:");
-            println!("   ct worktree clean --force");
-        }
-        return Ok(());
-    }
-
-    // Ask for confirmation unless skipped
-    if !skip_confirmation {
-        println!();
-
-        // Show info about unclean worktrees if any exist and not forcing
-        if unclean_count > 0 && !force {
-            println!("ℹ️  Unclean worktrees require --force flag to remove.");
-        }
-
-        print!(
-            "❓ Are you sure you want to delete {worktrees_to_clean} {action_description}? [y/N]: "
-        );
-        use std::io::{self, Write};
-        io::stdout().flush().context("Failed to flush stdout")?;
-
-        let mut input = String::new();
-        io::stdin()
-            .read_line(&mut input)
-            .context("Failed to read input")?;
-
-        let input = input.trim().to_lowercase();
-        if input != "y" && input != "yes" {
-            println!("❌ Cleanup cancelled.");
-            return Ok(());
-        }
-    }
-
-    println!("🧹 Starting cleanup...");
-    println!();
-
-    // Clean up each worktree (only clean ones unless force is used)
-    let mut cleaned_count = 0;
-    let mut skipped_count = 0;
-
-    for (_, _, branch, status) in worktree_status_list.iter() {
-        let clean_branch = if branch.starts_with("refs/heads/") {
-            branch.strip_prefix("refs/heads/").unwrap_or(branch)
-        } else {
-            branch
-        };
-
-        if let Some(task_id) = clean_branch.strip_prefix(branch_prefix) {
-            if !task_id.is_empty() {
-                let should_clean = if let Some(s) = status {
-                    force || s.is_clean()
-                } else {
-                    // If status unknown, only clean with force
-                    force
-                };
-
-                if should_clean {
-                    let status_warning = if let Some(s) = status {
-                        if !s.is_clean() {
-                            " (⚠️  Unclean - forced removal)"
-                        } else {
-                            ""
-                        }
-                    } else {
-                        ""
-                    };
-
-                    println!(
-                        "🗑️  [{}/{}] Cleaning up task '{}'{}...",
-                        cleaned_count + 1,
-                        worktrees_to_clean,
-                        task_id,
-                        status_warning
-                    );
-
-                    // Remove worktree (this will also delete the branch)
-                    if let Err(e) = remove_git_worktree(task_id, branch_prefix, auto_clean_branch) {
-                        println!("⚠️  Failed to remove worktree for '{task_id}': {e}");
-                    } else {
-                        println!("✓ Worktree removed for task '{task_id}'");
-                        cleaned_count += 1;
-                    }
-
-                    println!();
-                } else {
-                    // Skip unclean worktrees when not using force
-                    skipped_count += 1;
-                    if skipped_count == 1 {
-                        println!("⏭️  Skipping unclean worktrees (use --force to clean them):");
-                    }
-                    println!("   - {task_id}");
-                }
-            }
-        }
-    }
-
-    if skipped_count > 0 {
-        println!();
-    }
-
-    println!("✅ Worktree cleanup completed!");
-    println!("   Cleaned: {cleaned_count} worktrees");
-    if skipped_count > 0 {
-        println!("   Skipped: {skipped_count} unclean worktrees");
-    }
-
-    Ok(())
-}
-
 async fn clean_all_worktrees_and_volumes(
     branch_prefix: &str,
     skip_confirmation: bool,
     force: bool,
-    docker_config: &config::DockerConfig,
+    _docker_config: &config::DockerConfig,
     auto_clean_branch: bool,
 ) -> Result<()> {
-    println!("🧹 Cleaning up both worktrees and volumes...");
+    println!("🧹 Cleaning up all claude-task git worktrees and Docker volumes...");
+
+    // Clean worktrees
+    worktree::clean_all_worktrees(branch_prefix, skip_confirmation, force, auto_clean_branch)
+        .await?;
+
+    // Clean Docker volumes TODO: add this back in
+    // docker::clean_shared_volumes(false, docker_config).await?;
+
+    println!("\n✅ All clean up operations completed.");
+    Ok(())
+}
+
+async fn handle_docker_setup(
+    task_base_home_dir: &str,
+    debug: bool,
+    claude_user_config: &config::ClaudeUserConfig,
+    claude_credentials: &Option<config::ClaudeCredentials>,
+) -> Result<()> {
+    // Check if we have a token in config
+    if let Some(_credentials) = claude_credentials {
+        println!("🔑 Using long-lived token from config...");
+        println!("   Token configured in claudeCredentials.token");
+        println!("   This token will be injected as CLAUDE_CODE_OAUTH_TOKEN");
+        println!();
+        println!("ℹ️  To generate a new token, run: claude setup-token");
+        println!("   Then add it to your config.json under claudeCredentials.token");
+
+        // Create minimal directory structure for token auth
+        let base_dir = Config::expand_tilde(task_base_home_dir);
+        let claude_dir = base_dir.join(".claude");
+        std::fs::create_dir_all(&claude_dir)?;
+
+        // Create empty credentials file that might be expected
+        std::fs::write(claude_dir.join(".credentials.json"), "{}")?;
+
+        // Copy user memory if it exists
+        let user_memory_path = Config::expand_tilde(&claude_user_config.user_memory_path);
+        if user_memory_path.exists() {
+            let dest_path = claude_dir.join("CLAUDE.md");
+            std::fs::copy(&user_memory_path, &dest_path)?;
+            println!("✓ Copied user memory to {}", dest_path.display());
+        } else {
+            // Create default CLAUDE.md
+            let claude_md_content = assets::get_claude_md_content();
+            std::fs::write(claude_dir.join("CLAUDE.md"), claude_md_content)?;
+            println!("✓ Created default CLAUDE.md");
+        }
+
+        // Create minimal claude config
+        let claude_config_path = base_dir.join(".claude.json");
+        std::fs::write(&claude_config_path, "{}")?;
+
+        // Create Docker home volume with bind mount
+        println!("Creating Docker volume 'claude-task-home'...");
+        credentials::create_docker_home_volume_only(&base_dir.to_string_lossy()).await?;
+
+        println!("✓ Token-based setup completed");
+    } else {
+        // This is the existing setup logic for Docker
+        setup_credentials_and_config(task_base_home_dir, debug, claude_user_config).await?;
+    }
+    Ok(())
+}
+
+async fn handle_kubernetes_setup(
+    task_base_home_dir: &str,
+    debug: bool,
+    claude_user_config: &config::ClaudeUserConfig,
+    claude_credentials: &Option<config::ClaudeCredentials>,
+    kube_config: &Option<config::KubeConfig>,
+) -> Result<()> {
+    use dialoguer::Confirm;
+
+    // Check if Kubernetes is configured
+    let mut kube_config = kube_config
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Kubernetes configuration not found in config.json"))?
+        .clone();
+
+    // Determine context and namespace
+    let (final_context, final_namespace, needs_confirmation) =
+        if kube_config.context.is_none() || kube_config.namespace.is_none() {
+            // Detect current context if not specified
+            let context = kube_config
+                .context
+                .clone()
+                .or_else(config::Config::get_current_kube_context)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "No Kubernetes context specified and could not detect current context. \
+            Please specify a context in config.json or ensure kubectl is configured."
+                    )
+                })?;
+
+            // Generate namespace if not specified
+            let namespace = kube_config.namespace.clone().unwrap_or_else(|| {
+                let suffix = config::Config::generate_namespace_suffix();
+                format!("claude-task-{suffix}")
+            });
+
+            (context, namespace, !kube_config.namespace_confirmed)
+        } else {
+            // Both context and namespace are specified, user knows what they're doing
+            (
+                kube_config.context.clone().unwrap(),
+                kube_config.namespace.clone().unwrap(),
+                false,
+            )
+        };
+
+    // Show confirmation if needed
+    if needs_confirmation {
+        println!("🚀 Kubernetes Setup Confirmation");
+        println!();
+        println!("This will create Kubernetes resources in:");
+        println!("   Context: {final_context}");
+        println!("   Namespace: {final_namespace} (will be created if it doesn't exist)");
+        println!();
+        println!("The following resources will be created:");
+        println!("   - Namespace (if needed)");
+        println!("   - Secrets for Git and Claude credentials");
+        println!("   - Image pull secret for ghcr.io");
+        println!();
+        println!("⚠️  Please ensure you have appropriate permissions in this cluster.");
+        println!();
+
+        let confirmed = Confirm::new()
+            .with_prompt("Do you want to proceed with this setup?")
+            .default(false)
+            .interact()?;
+
+        if !confirmed {
+            println!("Setup cancelled.");
+            return Ok(());
+        }
+
+        // Update the config to remember this confirmation
+        kube_config.namespace_confirmed = true;
+
+        // Save the updated config
+        let config_path = Config::default_config_path();
+        let mut full_config = Config::load(Some(&config_path))?;
+        if let Some(ref mut kc) = full_config.kube_config {
+            kc.context = Some(final_context.clone());
+            kc.namespace = Some(final_namespace.clone());
+            kc.namespace_confirmed = true;
+        }
+        full_config.save(&config_path)?;
+        println!("✓ Configuration saved");
+    }
+
+    println!("🚀 Setting up Kubernetes environment...");
+    println!("   Context: {final_context}");
+    println!("   Namespace: {final_namespace}");
     println!();
 
-    // Clean worktrees first
-    clean_all_worktrees(branch_prefix, skip_confirmation, force, auto_clean_branch).await?;
+    // First, ensure credentials are available (either token or extracted)
+    println!("📋 Ensuring Claude credentials are available...");
+    let home_volume_path = Config::expand_tilde(task_base_home_dir);
 
-    println!();
-    println!("🐋 Now cleaning Docker volumes...");
-    println!();
+    if let Some(_credentials) = claude_credentials {
+        println!("   ✓ Using long-lived token from config");
 
-    // Then clean volumes
-    clean_shared_volumes(false, docker_config).await?;
+        // Ensure minimal setup for token auth
+        handle_docker_setup(
+            task_base_home_dir,
+            debug,
+            claude_user_config,
+            claude_credentials,
+        )
+        .await?;
+    } else {
+        // Check if credentials exist from previous Docker setup
+        let credentials_path = home_volume_path.join(".claude/.credentials.json");
+        let config_path = home_volume_path.join(".claude.json");
 
-    println!();
-    println!("✅ Complete cleanup finished!");
-    println!("   Both worktrees and volumes have been cleaned");
+        if !credentials_path.exists() || !config_path.exists() {
+            println!("   ⚠️  Claude credentials not found. Running Docker setup first...");
+            println!();
+            setup_credentials_and_config_with_cache(
+                task_base_home_dir,
+                debug,
+                claude_user_config,
+                false, // don't update cache
+            )
+            .await?;
+        } else {
+            println!("   ✓ Claude credentials found");
+        }
+    }
+
+    // Create Kubernetes client
+    println!("\n🔧 Connecting to Kubernetes cluster...");
+    let k8s_runner = kube::KubernetesJobRunner::new()
+        .await
+        .context("Failed to connect to Kubernetes cluster")?;
+
+    // Ensure namespace exists
+    println!("\n📁 Ensuring namespace '{final_namespace}' exists...");
+    k8s_runner.create_namespace(&final_namespace).await?;
+
+    // Create ghcr-pull-secret if it doesn't exist
+    if let Some(ref pull_secret_name) = kube_config.image_pull_secret {
+        println!("\n🔐 Setting up image pull secret '{pull_secret_name}'...");
+
+        // Check if we have GitHub token from environment or gh CLI
+        if let Some(github_token) = get_github_token() {
+            // Try to get username from GITHUB_USERNAME or fall back to system username
+            let github_username = std::env::var("GITHUB_USERNAME")
+                .or_else(|_| std::env::var("USER"))
+                .unwrap_or_else(|_| "unknown".to_string());
+
+            println!("   Using GitHub username: {github_username}");
+            println!(
+                "   Token source: {}",
+                if std::env::var("GITHUB_TOKEN").is_ok() {
+                    "GITHUB_TOKEN env var"
+                } else {
+                    "gh CLI"
+                }
+            );
+            k8s_runner
+                .create_docker_registry_secret(
+                    &final_namespace,
+                    pull_secret_name,
+                    "ghcr.io",
+                    &github_username,
+                    &github_token,
+                )
+                .await?;
+        } else {
+            println!(
+                "   ⚠️  Please ensure '{pull_secret_name}' secret exists for pulling images from GHCR"
+            );
+            println!("   Create with: kubectl create secret docker-registry {pull_secret_name} \\");
+            println!("     --docker-server=ghcr.io \\");
+            println!("     --docker-username=YOUR_GITHUB_USERNAME \\");
+            println!("     --docker-password=YOUR_GITHUB_TOKEN \\");
+            println!("     -n {final_namespace}");
+        }
+    }
+
+    // Create git credentials secret
+    println!("\n🔑 Git credentials secret...");
+    println!("   Secret name: {}", kube_config.git_secret_name);
+    println!("   Secret key: {}", kube_config.git_secret_key);
+
+    // Check if we have GitHub token from environment or gh CLI for git secret
+    if let Some(github_token) = get_github_token() {
+        println!(
+            "   Token source: {}",
+            if std::env::var("GITHUB_TOKEN").is_ok() {
+                "GITHUB_TOKEN env var"
+            } else {
+                "gh CLI"
+            }
+        );
+        k8s_runner
+            .create_git_secret(
+                &final_namespace,
+                &kube_config.git_secret_name,
+                &kube_config.git_secret_key,
+                &github_token,
+            )
+            .await?;
+    } else {
+        println!("   ⚠️  Git tokens should be provided via --git-token flag when running tasks");
+        println!("   Or create the secret manually:");
+        println!(
+            "   kubectl create secret generic {} \\",
+            kube_config.git_secret_name
+        );
+        println!(
+            "     --from-literal={}=YOUR_GITHUB_TOKEN \\",
+            kube_config.git_secret_key
+        );
+        println!("     -n {final_namespace}");
+    }
+
+    // Create Claude credentials secret
+    println!("\n📦 Creating Claude credentials secret...");
+    let secret_name = "claude-credentials";
+
+    k8s_runner
+        .create_claude_credentials_secret(&final_namespace, secret_name, &home_volume_path)
+        .await?;
+
+    println!("\n✅ Kubernetes setup completed!");
+    println!("\nVerify your secrets with:");
+    println!("   kubectl get secrets -n {final_namespace}");
 
     Ok(())
 }
 
-fn get_matching_worktrees(branch_prefix: &str) -> Result<Vec<(String, String, String)>> {
-    let current_dir = std::env::current_dir().context("Could not get current directory")?;
-    let repo_root = find_git_repo_root(&current_dir)?;
-
-    let output = Command::new("git")
-        .args(["worktree", "list", "--porcelain"])
-        .current_dir(&repo_root)
-        .output()
-        .context("Failed to execute git worktree list command")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(anyhow::anyhow!(
-            "Git worktree list command failed: {}",
-            stderr
-        ));
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let lines: Vec<&str> = stdout.lines().collect();
-
-    if lines.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let mut current_worktree: Option<(String, String, String)> = None; // (path, head, branch)
-    let mut matching_worktrees = Vec::new();
-
-    for line in lines {
-        if line.starts_with("worktree ") {
-            // If we have a previous worktree, check if it matches and store it
-            if let Some((path, head, branch)) = current_worktree.take() {
-                if should_clean_worktree(&branch, branch_prefix, &path, &repo_root) {
-                    matching_worktrees.push((path, head, branch));
-                }
-            }
-
-            // Start new worktree
-            let path = line.strip_prefix("worktree ").unwrap_or(line);
-            current_worktree = Some((path.to_string(), String::new(), String::new()));
-        } else if line.starts_with("HEAD ") {
-            if let Some((_, ref mut head, _)) = current_worktree.as_mut() {
-                let new_head = line.strip_prefix("HEAD ").unwrap_or(line);
-                *head = new_head.to_string();
-            }
-        } else if line.starts_with("branch ") {
-            if let Some((_, _, ref mut branch)) = current_worktree.as_mut() {
-                let new_branch = line.strip_prefix("branch ").unwrap_or(line);
-                *branch = new_branch.to_string();
-            }
-        } else if line == "bare" {
-            if let Some((_, _, ref mut branch)) = current_worktree.as_mut() {
-                *branch = "(bare)".to_string();
-            }
-        } else if line == "detached" {
-            if let Some((_, _, ref mut branch)) = current_worktree.as_mut() {
-                *branch = "(detached)".to_string();
-            }
-        }
-    }
-
-    // Handle the last worktree if it exists
-    if let Some((path, head, branch)) = current_worktree {
-        if should_clean_worktree(&branch, branch_prefix, &path, &repo_root) {
-            matching_worktrees.push((path, head, branch));
-        }
-    }
-
-    Ok(matching_worktrees)
-}
-
-fn should_clean_worktree(
-    branch: &str,
-    branch_prefix: &str,
-    path: &str,
-    repo_root: &std::path::Path,
-) -> bool {
-    // Clean up branch name by removing refs/heads/ prefix for comparison
-    let clean_branch = if branch.starts_with("refs/heads/") {
-        branch.strip_prefix("refs/heads/").unwrap_or(branch)
-    } else {
-        branch
-    };
-
-    // Exclude the main repository directory
-    let worktree_path = std::path::Path::new(path);
-    if worktree_path == repo_root {
-        return false;
-    }
-
-    // Only include branches that start with the prefix (exclude main/master and special states)
-    clean_branch.starts_with(branch_prefix)
-}
-
-#[derive(Debug)]
-pub struct WorktreeStatus {
-    pub has_uncommitted_changes: bool,
-    pub has_unpushed_commits: bool,
-    pub has_no_remote: bool,
-    pub current_branch: String,
-    pub remote_branch: Option<String>,
-    pub ahead_count: usize,
-    pub behind_count: usize,
-    pub changed_files: Vec<String>,
-    pub untracked_files: Vec<String>,
-    pub unpushed_commits: Vec<(String, String)>, // (commit_id, message)
-    pub is_likely_merged: bool,
-    pub merge_info: Option<String>, // e.g., "squash-merged", "merged", "PR #123"
-}
-
-impl WorktreeStatus {
-    pub fn is_clean(&self) -> bool {
-        !self.has_uncommitted_changes
-            && (!self.has_unpushed_commits || self.is_likely_merged)
-            && (!self.has_no_remote || self.is_likely_merged)
-    }
-
-    pub fn get_status_icon(&self) -> &'static str {
-        if self.is_clean() {
-            "✅"
-        } else {
-            "⚠️"
-        }
-    }
-
-    pub fn get_status_details(&self) -> Vec<String> {
-        let mut details = Vec::new();
-
-        if self.has_uncommitted_changes {
-            details.push("uncommitted changes".to_string());
-        }
-
-        if self.has_unpushed_commits && self.ahead_count > 0 {
-            details.push(format!("{} unpushed commits", self.ahead_count));
-        }
-
-        if self.behind_count > 0 {
-            details.push(format!("{} commits behind remote", self.behind_count));
-        }
-
-        if self.has_no_remote {
-            details.push("no remote tracking branch".to_string());
-        }
-
-        details
-    }
-}
-
-fn check_if_branch_merged(branch: &str, worktree_path: &Path) -> (bool, Option<String>) {
-    // Try to detect if this branch has been merged into main/master
-
-    // First, find the main branch (main or master)
-    let main_branches = ["main", "master"];
-    let mut main_branch = None;
-
-    for mb in &main_branches {
-        let output = Command::new("git")
-            .args(["rev-parse", "--verify", mb])
-            .current_dir(worktree_path)
-            .output();
-
-        if let Ok(output) = output {
-            if output.status.success() {
-                main_branch = Some(*mb);
-                break;
-            }
-        }
-    }
-
-    let main_branch = match main_branch {
-        Some(mb) => mb,
-        None => return (false, None), // Can't detect without a main branch
-    };
-
-    // Method 1: Check if branch is in --merged list (regular merge)
-    if let Ok(output) = Command::new("git")
-        .args(["branch", "--merged", main_branch])
-        .current_dir(worktree_path)
-        .output()
-    {
-        if output.status.success() {
-            let output_str = String::from_utf8_lossy(&output.stdout);
-            for line in output_str.lines() {
-                let line = line.trim().trim_start_matches('*').trim();
-                if line == branch {
-                    return (true, Some("merged".to_string()));
-                }
-            }
-        }
-    }
-
-    // Method 2: Check if all changes are already in main (squash merge detection)
-    // This compares the diff between the merge-base and branch tip
-    if let Ok(merge_base_output) = Command::new("git")
-        .args(["merge-base", main_branch, branch])
-        .current_dir(worktree_path)
-        .output()
-    {
-        if merge_base_output.status.success() {
-            let merge_base = String::from_utf8_lossy(&merge_base_output.stdout)
-                .trim()
-                .to_string();
-
-            // Check if there are any changes between merge-base..branch that aren't in main
-            if let Ok(diff_output) = Command::new("git")
-                .args(["diff", "--exit-code", &format!("{merge_base}..{branch}")])
-                .current_dir(worktree_path)
-                .output()
-            {
-                if diff_output.status.success() {
-                    // No diff means no changes
-                    return (true, Some("no changes".to_string()));
-                }
-
-                // There are changes, check if they're already in main using git log --grep
-                // First, get the commit messages from the branch
-                if let Ok(log_output) = Command::new("git")
-                    .args(["log", "--oneline", &format!("{merge_base}..{branch}")])
-                    .current_dir(worktree_path)
-                    .output()
-                {
-                    if log_output.status.success() {
-                        let log_str = String::from_utf8_lossy(&log_output.stdout);
-                        let commit_count = log_str.lines().count();
-
-                        if commit_count > 0 {
-                            // Check if main has any commits that might be squash merges of this branch
-                            // Look for commits that mention the branch name or PR
-                            if let Ok(main_log) = Command::new("git")
-                                .args([
-                                    "log",
-                                    "--oneline",
-                                    "--grep",
-                                    &format!("{branch}\\|#[0-9]\\+"),
-                                    &format!("{merge_base}..{main_branch}"),
-                                ])
-                                .current_dir(worktree_path)
-                                .output()
-                            {
-                                if main_log.status.success() && !main_log.stdout.is_empty() {
-                                    return (true, Some("likely squash-merged".to_string()));
-                                }
-                            }
-
-                            // Alternative: Check if the file changes are already in main
-                            // Get list of files changed in the branch
-                            if let Ok(files_output) = Command::new("git")
-                                .args(["diff", "--name-only", &format!("{merge_base}..{branch}")])
-                                .current_dir(worktree_path)
-                                .output()
-                            {
-                                if files_output.status.success() {
-                                    let files = String::from_utf8_lossy(&files_output.stdout);
-                                    let file_count = files.lines().count();
-
-                                    if file_count > 0 {
-                                        // For each file, check if its content in branch matches main
-                                        let mut all_changes_in_main = true;
-
-                                        for file in files.lines() {
-                                            if !file.is_empty() {
-                                                // Compare file content between branch and main
-                                                if let Ok(diff) = Command::new("git")
-                                                    .args([
-                                                        "diff",
-                                                        "--no-index",
-                                                        "--quiet",
-                                                        &format!("{branch}:{file}"),
-                                                        &format!("{main_branch}:{file}"),
-                                                    ])
-                                                    .current_dir(worktree_path)
-                                                    .output()
-                                                {
-                                                    if !diff.status.success() {
-                                                        // Files differ
-                                                        all_changes_in_main = false;
-                                                        break;
-                                                    }
-                                                }
-                                            }
-                                        }
-
-                                        if all_changes_in_main && commit_count > 1 {
-                                            // Multiple commits but all changes are in main = likely squash merge
-                                            return (
-                                                true,
-                                                Some("likely squash-merged".to_string()),
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // Method 3: Try GitHub CLI if available to check PR status
-    if let Ok(output) = Command::new("gh")
-        .args([
-            "pr",
-            "list",
-            "--state",
-            "merged",
-            "--head",
-            branch,
-            "--json",
-            "number,title",
-        ])
-        .current_dir(worktree_path)
-        .output()
-    {
-        if output.status.success() && !output.stdout.is_empty() {
-            let json_str = String::from_utf8_lossy(&output.stdout);
-            if json_str.contains("number") {
-                // Simple check - if there's a merged PR for this branch
-                return (true, Some("PR merged".to_string()));
-            }
-        }
-    }
-
-    (false, None)
-}
-
-pub fn check_worktree_status(worktree_path: &Path) -> Result<WorktreeStatus> {
-    // Check for uncommitted changes and get file lists
-    let status_output = Command::new("git")
-        .args(["status", "--porcelain"])
-        .current_dir(worktree_path)
-        .output()
-        .context("Failed to execute git status command")?;
-
-    if !status_output.status.success() {
-        let stderr = String::from_utf8_lossy(&status_output.stderr);
-        return Err(anyhow::anyhow!("Git status command failed: {}", stderr));
-    }
-
-    let status_str = String::from_utf8_lossy(&status_output.stdout);
-    let mut changed_files = Vec::new();
-    let mut untracked_files = Vec::new();
-
-    for line in status_str.lines() {
-        if line.len() >= 3 {
-            let status_code = &line[0..2];
-            let file_path = line[3..].trim();
-
-            if status_code.contains('?') {
-                untracked_files.push(file_path.to_string());
-            } else {
-                changed_files.push(format!("{} {}", status_code.trim(), file_path));
-            }
-        }
-    }
-
-    let has_uncommitted_changes = !changed_files.is_empty() || !untracked_files.is_empty();
-
-    // Get current branch
-    let branch_output = Command::new("git")
-        .args(["rev-parse", "--abbrev-ref", "HEAD"])
-        .current_dir(worktree_path)
-        .output()
-        .context("Failed to get current branch")?;
-
-    let current_branch = if branch_output.status.success() {
-        String::from_utf8_lossy(&branch_output.stdout)
-            .trim()
-            .to_string()
-    } else {
-        "unknown".to_string()
-    };
-
-    // Check if branch has a remote tracking branch
-    let remote_output = Command::new("git")
-        .args(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"])
-        .current_dir(worktree_path)
-        .output()
-        .context("Failed to check remote tracking branch")?;
-
-    let (has_no_remote, remote_branch) = if remote_output.status.success() {
-        let remote = String::from_utf8_lossy(&remote_output.stdout)
-            .trim()
-            .to_string();
-        (false, Some(remote))
-    } else {
-        (true, None)
-    };
-
-    // Check ahead/behind status and get unpushed commits
-    let (ahead_count, behind_count, has_unpushed_commits, unpushed_commits) = if !has_no_remote {
-        let rev_list_output = Command::new("git")
-            .args(["rev-list", "--left-right", "--count", "HEAD...@{u}"])
-            .current_dir(worktree_path)
-            .output()
-            .context("Failed to check ahead/behind status")?;
-
-        if rev_list_output.status.success() {
-            let output = String::from_utf8_lossy(&rev_list_output.stdout);
-            let parts: Vec<&str> = output.trim().split('\t').collect();
-
-            let ahead = parts
-                .first()
-                .and_then(|s| s.parse::<usize>().ok())
-                .unwrap_or(0);
-            let behind = parts
-                .get(1)
-                .and_then(|s| s.parse::<usize>().ok())
-                .unwrap_or(0);
-
-            // Get unpushed commits if there are any
-            let mut commits = Vec::new();
-            if ahead > 0 {
-                let log_output = Command::new("git")
-                    .args(["log", "--oneline", "@{u}..HEAD"])
-                    .current_dir(worktree_path)
-                    .output()
-                    .context("Failed to get unpushed commits")?;
-
-                if log_output.status.success() {
-                    let log_str = String::from_utf8_lossy(&log_output.stdout);
-                    for line in log_str.lines() {
-                        if let Some(space_pos) = line.find(' ') {
-                            let commit_id = line[..space_pos].to_string();
-                            let message = line[space_pos + 1..].to_string();
-                            commits.push((commit_id, message));
-                        }
-                    }
-                }
-            }
-
-            (ahead, behind, ahead > 0, commits)
-        } else {
-            (0, 0, false, Vec::new())
-        }
-    } else {
-        // If no remote, check if we have any commits
-        let log_output = Command::new("git")
-            .args(["log", "--oneline", "-10"]) // Get last 10 commits if no remote
-            .current_dir(worktree_path)
-            .output()
-            .context("Failed to check commits")?;
-
-        let mut commits = Vec::new();
-        if log_output.status.success() && !log_output.stdout.is_empty() {
-            let log_str = String::from_utf8_lossy(&log_output.stdout);
-            for line in log_str.lines() {
-                if let Some(space_pos) = line.find(' ') {
-                    let commit_id = line[..space_pos].to_string();
-                    let message = line[space_pos + 1..].to_string();
-                    commits.push((commit_id, message));
-                }
-            }
-        }
-
-        let has_commits = !commits.is_empty();
-        (commits.len(), 0, has_commits, commits)
-    };
-
-    // Check if branch has been merged (only if it has unpushed commits or no remote)
-    let (is_likely_merged, merge_info) = if has_unpushed_commits || has_no_remote {
-        check_if_branch_merged(&current_branch, worktree_path)
-    } else {
-        (false, None)
-    };
-
-    Ok(WorktreeStatus {
-        has_uncommitted_changes,
-        has_unpushed_commits,
-        has_no_remote,
-        current_branch,
-        remote_branch,
-        ahead_count,
-        behind_count,
-        changed_files,
-        untracked_files,
-        unpushed_commits,
-        is_likely_merged,
-        merge_info,
-    })
-}
-
 #[tokio::main]
 async fn main() -> Result<()> {
-    let mut cli = Cli::parse();
+    let cli = Cli::parse();
 
-    // Special handling for config init command - don't load config first
-    if let Some(Commands::Config {
-        command: ConfigCommands::Init { .. },
-    }) = &cli.command
-    {
-        return handle_config_command(
-            ConfigCommands::Init {
-                force: matches!(
-                    &cli.command,
-                    Some(Commands::Config {
-                        command: ConfigCommands::Init { force: true }
-                    })
-                ),
-            },
-            cli.config_path.as_ref(),
-        )
-        .await;
+    // Handle config command first as it doesn't need the config loaded
+    if let Some(Commands::Config { command }) = &cli.command {
+        handle_config_command(command.clone(), cli.config_path.as_ref()).await?;
+        return Ok(());
     }
 
-    // Load config file
+    // Load configuration for other commands
     let config = Config::load(cli.config_path.as_ref())?;
 
-    // Apply config values to CLI args if they're using defaults
-    // (CLI args always take precedence over config values)
-    if cli.worktree_base_dir == "~/.claude-task/worktrees" {
-        cli.worktree_base_dir = config.paths.worktree_base_dir.clone();
-    }
-    if cli.branch_prefix == "claude-task/" {
-        cli.branch_prefix = config.paths.branch_prefix.clone();
-    }
-    if cli.task_base_home_dir == "~/.claude-task/home" {
-        cli.task_base_home_dir = config.paths.task_base_home_dir.clone();
-    }
-    if !cli.debug {
-        cli.debug = config.global_option_defaults.debug;
-    }
+    // Override config with CLI args if provided
+    let debug = if cli.debug {
+        true
+    } else {
+        config.global_option_defaults.debug
+    };
+    let require_ht_mcp = if cli.require_ht_mcp {
+        true
+    } else {
+        config.global_option_defaults.require_ht_mcp
+    };
 
     match cli.command {
-        Some(Commands::Setup) => {
-            setup_credentials_and_config(
-                &cli.task_base_home_dir,
-                cli.debug,
-                &config.claude_user_config,
-            )
-            .await?;
-        }
-        Some(Commands::Worktree { command }) => match command {
-            WorktreeCommands::Create { task_id } => {
-                let (_worktree_path, _branch_name) =
-                    create_git_worktree(&task_id, &cli.branch_prefix, &cli.worktree_base_dir)?;
-            }
-            WorktreeCommands::List => {
-                list_git_worktrees(&cli.branch_prefix)?;
-            }
-            WorktreeCommands::Remove { task_id } => {
-                remove_git_worktree(
-                    &task_id,
-                    &cli.branch_prefix,
-                    config.worktree.auto_clean_on_remove,
-                )?;
-            }
-            WorktreeCommands::Open => {
-                select_worktree_interactively(
-                    &cli.branch_prefix,
-                    config.worktree.default_open_command.as_deref(),
-                )?;
-            }
-            WorktreeCommands::Clean { yes, force } => {
-                clean_all_worktrees(
-                    &cli.branch_prefix,
-                    yes,
-                    force,
-                    config.worktree.auto_clean_on_remove,
-                )
-                .await?;
-            }
-        },
-        Some(Commands::Docker { command }) => match command {
-            DockerCommands::Init {
-                refresh_credentials,
-            } => {
-                init_shared_volumes(
-                    refresh_credentials,
-                    &cli.task_base_home_dir,
-                    cli.debug,
-                    &config.docker,
-                    &config.claude_user_config,
-                )
-                .await?;
-            }
-            DockerCommands::List => {
-                list_docker_volumes(&config.docker).await?;
-            }
-            DockerCommands::Clean => {
-                clean_shared_volumes(cli.debug, &config.docker).await?;
-            }
-        },
         Some(Commands::Run {
             prompt,
             task_id,
@@ -2240,34 +1530,159 @@ async fn main() -> Result<()> {
             ht_mcp_port,
             web_view_proxy_port,
             async_mode,
+            execution_env,
+            kube_namespace,
+            kube_context,
+            git_secret_name,
+            git_secret_key,
         }) => {
-            let debug_mode = cli.debug; // Use global debug flag
+            // Override execution environment if specified
+            let exec_env = execution_env.as_ref().unwrap_or(&config.task_runner);
+
+            // Override kubernetes config if needed
+            let mut kube_config_override = config.kube_config.clone();
+            if exec_env == &ExecutionEnvironment::Kubernetes {
+                if let Some(ref mut kube_cfg) = kube_config_override {
+                    if let Some(ref namespace) = kube_namespace {
+                        kube_cfg.namespace = Some(namespace.clone());
+                    }
+                    if let Some(ref context) = kube_context {
+                        kube_cfg.context = Some(context.clone());
+                    }
+                } else if kube_namespace.is_some() || kube_context.is_some() {
+                    // Create a default kube config if CLI args are provided but config is missing
+                    kube_config_override = Some(config::KubeConfig {
+                        namespace: kube_namespace.clone(),
+                        context: kube_context.clone(),
+                        image: "ghcr.io/onegrep/claude-task:latest".to_string(),
+                        git_secret_name: "git-credentials".to_string(),
+                        git_secret_key: "token".to_string(),
+                        image_pull_secret: Some("ghcr-pull-secret".to_string()),
+                        namespace_confirmed: false,
+                    });
+                }
+            }
+
             let task_config = TaskRunConfig {
                 prompt: &prompt,
-                task_id,
+                task_id: task_id.clone(),
                 build,
-                workspace_dir,
-                approval_tool_permission,
-                debug: debug_mode,
-                mcp_config,
+                workspace_dir: workspace_dir.clone(),
+                approval_tool_permission: approval_tool_permission.clone(),
+                debug,
+                mcp_config: mcp_config.clone(),
                 skip_confirmation: yes,
-                worktree_base_dir: &cli.worktree_base_dir,
-                task_base_home_dir: &cli.task_base_home_dir,
+                worktree_base_dir: &config.paths.worktree_base_dir,
+                task_base_home_dir: &config.paths.task_base_home_dir,
+                branch_prefix: &config.paths.branch_prefix,
                 open_editor,
                 ht_mcp_port,
-                web_view_proxy_port: web_view_proxy_port
-                    .or(config.docker.default_web_view_proxy_port),
-                require_ht_mcp: cli.require_ht_mcp || config.global_option_defaults.require_ht_mcp,
+                web_view_proxy_port,
+                require_ht_mcp,
                 docker_config: &config.docker,
                 claude_user_config: &config.claude_user_config,
                 worktree_config: &config.worktree,
                 async_mode,
+                task_runner: exec_env,
+                kube_config: &kube_config_override,
+                git_secret_name: git_secret_name.clone(),
+                git_secret_key: git_secret_key.clone(),
+                claude_credentials: &config.claude_credentials,
             };
-            run_claude_task(task_config).await?;
+
+            if let Err(e) = run_claude_task(task_config).await {
+                eprintln!("❌ Error running task: {e:#?}");
+                // Print the full error chain
+                let mut source = e.source();
+                while let Some(err) = source {
+                    eprintln!("Caused by: {err}");
+                    source = err.source();
+                }
+                std::process::exit(1);
+            }
         }
+        Some(Commands::Worktree { command }) => match command {
+            WorktreeCommands::Create { task_id } => {
+                worktree::create_git_worktree(
+                    &task_id,
+                    &config.paths.branch_prefix,
+                    &config.paths.worktree_base_dir,
+                )?;
+            }
+            WorktreeCommands::List => {
+                worktree::list_git_worktrees(&config.paths.branch_prefix)?;
+            }
+            WorktreeCommands::Remove { task_id } => {
+                worktree::remove_git_worktree(
+                    &task_id,
+                    &config.paths.branch_prefix,
+                    config.worktree.auto_clean_on_remove,
+                )?;
+            }
+            WorktreeCommands::Open => {
+                worktree::select_worktree_interactively(
+                    &config.paths.branch_prefix,
+                    config.worktree.default_open_command.as_deref(),
+                )?;
+            }
+            WorktreeCommands::Clean { yes, force } => {
+                worktree::clean_all_worktrees(
+                    &config.paths.branch_prefix,
+                    yes,
+                    force,
+                    config.worktree.auto_clean_on_remove,
+                )
+                .await?;
+            }
+        },
+        Some(Commands::Docker { command }) => match command {
+            DockerCommands::Init {
+                refresh_credentials: _,
+            } => {
+                // init_shared_volumes(
+                //     refresh_credentials,
+                //     &config.paths.task_base_home_dir,
+                //     debug,
+                //     &config.docker,
+                //     &config.claude_user_config,
+                // )
+                // .await?;
+            }
+            DockerCommands::List => {
+                // list_docker_volumes(&config.docker).await?;
+            }
+            DockerCommands::Clean => {
+                // clean_shared_volumes(debug, &config.docker).await?;
+            }
+        },
+        Some(Commands::Config { .. }) => {
+            // Already handled above
+            unreachable!("Config command should have been handled earlier");
+        }
+        Some(Commands::Setup { command }) => match command {
+            SetupCommands::Docker => {
+                handle_docker_setup(
+                    &config.paths.task_base_home_dir,
+                    debug,
+                    &config.claude_user_config,
+                    &config.claude_credentials,
+                )
+                .await?;
+            }
+            SetupCommands::Kubernetes => {
+                handle_kubernetes_setup(
+                    &config.paths.task_base_home_dir,
+                    debug,
+                    &config.claude_user_config,
+                    &config.claude_credentials,
+                    &config.kube_config,
+                )
+                .await?;
+            }
+        },
         Some(Commands::Clean { yes, force }) => {
             clean_all_worktrees_and_volumes(
-                &cli.branch_prefix,
+                &config.paths.branch_prefix,
                 yes,
                 force,
                 &config.docker,
@@ -2275,19 +1690,15 @@ async fn main() -> Result<()> {
             )
             .await?;
         }
-        Some(Commands::Config { command }) => {
-            handle_config_command(command, cli.config_path.as_ref()).await?;
-        }
         Some(Commands::Mcp) => {
             mcp::run_mcp_server().await?;
         }
         Some(Commands::Version) => {
-            println!("claude-task {}", env!("CARGO_PKG_VERSION"));
+            println!("claude-task version: {}", config.version);
         }
         None => {
-            // Default behavior: show help
-            let mut cmd = Cli::command();
-            cmd.print_help().context("Failed to print help")?;
+            // No subcommand, print help
+            Cli::command().print_help()?;
         }
     }
 

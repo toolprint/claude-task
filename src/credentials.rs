@@ -63,6 +63,8 @@ struct FullClaudeConfig {
     user_id: Option<String>,
     #[serde(rename = "hasCompletedOnboarding")]
     has_completed_onboarding: Option<bool>,
+    #[serde(rename = "organizationRole")]
+    organization_role: Option<serde_json::Value>,
     #[serde(rename = "mcpServers")]
     mcp_servers: Option<HashMap<String, serde_json::Value>>,
     #[serde(flatten)]
@@ -291,6 +293,11 @@ async fn create_docker_home_volume(base_dir: &str) -> Result<()> {
     println!("✓ Docker volume 'claude-task-home' created with read-only bind mount to {base_dir}");
 
     Ok(())
+}
+
+pub async fn create_docker_home_volume_only(base_dir: &str) -> Result<()> {
+    // This is used for token-based auth where we just need the volume
+    create_docker_home_volume(base_dir).await
 }
 
 async fn inspect_docker_volume_contents() -> Result<()> {

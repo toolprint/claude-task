@@ -50,6 +50,7 @@ pub struct RunTaskOptions {
     pub mcp_config: Option<String>,
     pub skip_permissions: bool,
     pub async_mode: bool,
+    pub oauth_token: Option<String>,
 }
 
 impl Default for ClaudeTaskConfig {
@@ -367,6 +368,11 @@ impl DockerManager {
             env_vars.push("CCO_MCP_URL=http://host.docker.internal:8660/mcp".to_string());
         }
 
+        // Add OAuth token if provided
+        if let Some(ref token) = options.oauth_token {
+            env_vars.push(format!("CLAUDE_CODE_OAUTH_TOKEN={token}"));
+        }
+
         let mut host_config = HostConfig {
             mounts: Some(mounts),
             restart_policy: Some(RestartPolicy {
@@ -538,6 +544,7 @@ impl DockerManager {
     }
 
     /// List volumes related to Claude tasks
+    #[allow(dead_code)]
     pub async fn list_claude_volumes(&self) -> Result<Vec<(String, String)>> {
         let list_options = ListVolumesOptions::<String> {
             filters: {
@@ -568,6 +575,7 @@ impl DockerManager {
     }
 
     /// Get the size of a Docker volume
+    #[allow(dead_code)]
     async fn get_volume_size(&self, volume_name: &str) -> Result<String> {
         use std::process::Command;
 

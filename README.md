@@ -61,14 +61,54 @@ Claude Task includes intelligent credential synchronization to minimize biometri
 
 When multiple claude-task instances start simultaneously, only the first one prompts for biometric authentication. Other instances wait up to 60 seconds for the sync to complete, then proceed without additional prompts if credentials were recently validated.
 
+## Authentication Options
+
+Claude Task supports two authentication methods:
+
+### 1. macOS Keychain Authentication (Default)
+- Extracts existing Claude credentials from macOS keychain
+- Requires biometric authentication (Touch ID/Face ID)
+- Best for local development on macOS
+- Includes credential synchronization to minimize biometric prompts
+
+### 2. Token-Based Authentication
+- Uses long-lived OAuth tokens instead of keychain
+- Ideal for CI/CD environments or when keychain access isn't available
+- Avoids repeated biometric authentication prompts
+
+#### Setting Up Token Authentication
+1. Generate a long-lived token:
+   ```bash
+   claude setup-token
+   ```
+   
+2. Add the token to your config file:
+   ```bash
+   # Add to ~/.claude-task/config.json
+   {
+     "claudeCredentials": {
+       "token": "sk-ant-oat01-YOUR-TOKEN-HERE"
+     }
+   }
+   ```
+
+3. Use normally - claude-task will automatically use the token:
+   ```bash
+   ct setup docker     # Uses token instead of keychain
+   ct run "Your task"  # Token injected as CLAUDE_CODE_OAUTH_TOKEN
+   ```
+
+**Security Notes**: The token provides full Claude access for 1 year. Store securely and rotate periodically.
+
 ## Installation
 
 ### Prerequisites
-- macOS 10.15 or later
+- macOS 10.15 or later (for keychain-based authentication)
 - Rust 1.70+
-- Docker Desktop
+- Docker Desktop (for local execution)
 - Git
-- Administrative privileges for keychain access
+- Administrative privileges for keychain access (or OAuth token for token-based auth)
+- Kubernetes cluster and kubectl (for distributed execution)
 
 ### Build from Source
 ```bash
@@ -88,6 +128,49 @@ just docker-bake               # Build Docker image with HT-MCP
 just install
 ```
 
+### Docker Images
+
+Claude Task Docker images are available on GitHub Container Registry (GHCR):
+
+#### Available Images
+- `ghcr.io/onegrep/claude-task:latest` - Latest stable release (unified image for Docker and Kubernetes)
+- `ghcr.io/onegrep/claude-task:v0.1.0` - Specific version
+- `ghcr.io/onegrep/claude-task:latest-with-ht-mcp` - With HT-MCP web terminal support
+
+**Note**: The same unified Docker image is used for both local Docker and Kubernetes deployments, ensuring consistency and feature parity across environments.
+
+#### Pulling Images
+```bash
+# Pull the latest image
+docker pull ghcr.io/onegrep/claude-task:latest
+
+# Pull with HT-MCP support
+docker pull ghcr.io/onegrep/claude-task:latest-with-ht-mcp
+
+# Run directly
+docker run -it --rm \
+  -v $(pwd):/workspace \
+  -v claude-task-home:/home/base:ro \
+  ghcr.io/onegrep/claude-task:latest \
+  claude -p "Your task here"
+```
+
+#### Building and Pushing Images
+```bash
+# Login to GHCR (requires GITHUB_TOKEN with write:packages scope)
+export GITHUB_TOKEN=your_token_here
+just docker-login
+
+# Build and push standard image
+just docker-push
+
+# Build and push with HT-MCP
+just docker-push-with-ht-mcp
+
+# Build and push all variants
+just docker-push-all
+```
+
 ## Usage
 
 ### Command Overview
@@ -104,7 +187,7 @@ claude-task worktree <command>  # or: claude-task wt <command>
 # Docker volume management  
 claude-task docker <command>  # or: claude-task d <command>
 
-# Run Claude tasks
+# Run Claude tasks (Docker or Kubernetes)
 claude-task run <prompt>  # or: claude-task r <prompt>
 
 # Run with HT-MCP web terminal (recommended)
@@ -125,6 +208,129 @@ claude-task mcp
 # Show version information
 claude-task version  # or: claude-task v
 ```
+
+### Running Tasks in Kubernetes
+
+Claude Task supports running jobs in Kubernetes clusters for distributed execution. This is useful for running tasks in cloud environments or when you don't have Docker available locally.
+
+The same Docker image (`ghcr.io/onegrep/claude-task:latest`) is used for both local Docker and Kubernetes deployments, ensuring consistency across environments.
+
+#### Prerequisites
+- Access to a Kubernetes cluster
+- `kubectl` configured with appropriate context
+- Permissions to create Jobs, Secrets, and Namespaces
+- GitHub Personal Access Token (for private repositories)
+- GitHub CLI (`gh`) installed (optional, for automatic token detection)
+
+#### Namespace Safety Features
+
+Claude Task includes built-in namespace safety to prevent accidental resource creation in shared clusters:
+
+- **Auto-generated namespaces**: If no namespace is specified, claude-task generates a unique namespace like `claude-task-a1b2c3` based on machine metadata
+- **Setup confirmation**: First-time setup shows exactly what resources will be created and where
+- **Context detection**: Automatically detects current kubectl context if not specified
+- **No PII exposure**: Generated namespaces don't include usernames or other personal information
+
+Example first-time setup:
+```bash
+claude setup kubernetes
+# 🚀 Kubernetes Setup Confirmation
+# 
+# This will create Kubernetes resources in:
+#    Context: docker-desktop  
+#    Namespace: claude-task-a1b2c3 (will be created if it doesn't exist)
+# 
+# The following resources will be created:
+#    - Namespace (if needed)
+#    - Secrets for Git and Claude credentials
+#    - Image pull secret for ghcr.io
+# 
+# ⚠️  Please ensure you have appropriate permissions in this cluster.
+# 
+# Do you want to proceed with this setup? (y/N)
+```
+
+#### GitHub Authentication Options
+
+#### Setup and Authentication
+
+Claud Task uses persistent secrets created during setup for secure, consistent authentication:
+
+##### One-Time Setup (Recommended Approach)
+```bash
+# Set your GitHub token (one of these methods):
+export GITHUB_TOKEN=ghp_xxxxxxxxxxxxx  # Environment variable
+# OR
+gh auth login                          # GitHub CLI authentication
+
+# Run setup to create persistent secrets
+ct setup kubernetes
+
+# Run tasks without additional authentication
+ct run --execution-env kubernetes "implement new feature"
+```
+
+##### Custom Secret Configuration
+If you need custom secret names:
+```bash
+# Configure in ~/.claude-task/config.json
+{
+  "kubeConfig": {
+    "gitSecretName": "my-github-credentials",
+    "gitSecretKey": "pat",
+    "imagePullSecret": "my-registry-secret"
+  }
+}
+```
+
+##### Manual Secret Creation
+For existing secrets or custom setups:
+```bash
+# Create git credentials secret
+kubectl create secret generic git-credentials \
+  --from-literal=token=YOUR_GITHUB_TOKEN \
+  -n your-namespace
+
+# Create image pull secret for GHCR
+kubectl create secret docker-registry ghcr-pull-secret \
+  --docker-server=ghcr.io \
+  --docker-username=YOUR_GITHUB_USERNAME \
+  --docker-password=YOUR_GITHUB_TOKEN \
+  -n your-namespace
+```
+
+#### Configuration
+You can set defaults in `~/.claude-task/config.json`:
+```json
+{
+  "taskRunner": "kubernetes",
+  "kubeConfig": {
+    "context": "my-cluster",
+    "namespace": "development",
+    "image": "ghcr.io/onegrep/claude-task:latest",
+    "gitSecretName": "git-credentials",
+    "gitSecretKey": "token",
+    "imagePullSecret": "ghcr-pull-secret",
+    "namespaceConfirmed": true
+  }
+}
+```
+
+#### Security Best Practices
+1. **Use persistent secrets** created during setup (no temporary credentials)
+2. **Use environment variables** or GitHub CLI for token discovery
+3. **Rotate tokens regularly** and use fine-grained personal access tokens
+4. **Restrict token permissions** to only what's needed (repo access)
+5. **Use namespace isolation** to prevent resource conflicts
+6. **Confirm setup** in shared clusters to understand resource creation
+
+#### Differences from Docker Mode
+- **No local file access**: Kubernetes clones a fresh copy of the repository
+- **Branch-based workflow**: Creates new branches instead of worktrees
+- **No port forwarding**: HT-MCP and web proxy features not available
+- **Distributed execution**: Can run on any node in the cluster
+- **Persistent secrets**: Uses cluster-managed secrets instead of local credentials
+- **Unified image**: Same Docker image used for consistency across environments
 
 ### MCP Server Usage
 
@@ -379,7 +585,7 @@ claude-task --config-path ~/my-config.json config show
     "branchPrefix": "claude-task/"
   },
   "docker": {
-    "imageName": "claude-task:dev",
+    "imageName": "ghcr.io/onegrep/claude-task:latest",
     "volumePrefix": "claude-task-",
     "volumes": {
       "home": "claude-task-home",
@@ -401,10 +607,24 @@ claude-task --config-path ~/my-config.json config show
     "defaultOpenCommand": null,
     "autoCleanOnRemove": false
   },
+  "claudeCredentials": {
+    "token": "sk-ant-oat01-YOUR-TOKEN-HERE"
+  },
   "globalOptionDefaults": {
     "debug": false,
     "openEditorAfterCreate": false,
-    "buildImageBeforeRun": false
+    "buildImageBeforeRun": false,
+    "requireHtMcp": false
+  },
+  "taskRunner": "docker",
+  "kubeConfig": {
+    "context": "my-cluster",
+    "namespace": "claude-task-a1b2c3",
+    "image": "ghcr.io/onegrep/claude-task:latest",
+    "gitSecretName": "git-credentials",
+    "gitSecretKey": "token",
+    "imagePullSecret": "ghcr-pull-secret",
+    "namespaceConfirmed": true
   }
 }
 ```
@@ -428,6 +648,21 @@ claude-task --config-path ~/my-config.json config show
 **Claude User Configuration:**
 - `configPath` - Path to Claude configuration file (typically ~/.claude.json)
 - `userMemoryPath` - Path to user memory/instructions file (CLAUDE.md)
+
+**Claude Credentials (Optional):**
+- `token` - Long-lived OAuth token for authentication (alternative to keychain)
+
+**Task Runner Configuration:**
+- `taskRunner` - Execution environment: \"docker\" or \"kubernetes\"
+
+**Kubernetes Configuration:**
+- `context` - Kubernetes context to use
+- `namespace` - Target namespace (auto-generated if not specified)
+- `image` - Docker image to use for jobs
+- `gitSecretName` - Name of secret containing Git credentials
+- `gitSecretKey` - Key within the secret containing the token
+- `imagePullSecret` - Name of secret for pulling images from private registries
+- `namespaceConfirmed` - Whether namespace creation has been confirmed
 
 **Worktree Configuration:**
 - `defaultOpenCommand` - Custom command to open worktrees (e.g., "code", "cursor", "zed")
@@ -455,6 +690,9 @@ The tool respects standard environment variables:
 - `CARGO_HOME` - For binary installation location
 - `DOCKER_HOST` - For Docker daemon connection
 - `RUST_LOG` - For MCP server logging (e.g., `RUST_LOG=debug`)
+- `GITHUB_TOKEN` - GitHub Personal Access Token for Kubernetes authentication
+- `GITHUB_USERNAME` - GitHub username for image pull secrets
+- `CLAUDE_CODE_OAUTH_TOKEN` - Long-lived Claude authentication token (auto-injected)
 
 ### MCP Server Configuration
 When running the MCP server (`claude-task mcp`), the following apply:
@@ -540,6 +778,83 @@ cd examples/local-nginx-test
 - **Restricted Built-in Tools**: When HT-MCP is enabled, Claude's built-in tools are restricted
 - **Session Isolation**: Each task runs in its own containerized environment
 - **Transparent Monitoring**: All terminal operations are visible via web interface
+
+## Security Best Practices
+
+### macOS Keychain Access
+- Claude Task requires keychain access to extract credentials
+- Biometric authentication (Touch ID) is required for each extraction
+- Credentials are never stored in plain text on disk
+- Credential sync system minimizes authentication prompts for parallel tasks
+
+### Git Authentication Security
+
+#### For Docker Mode (Local)
+- Credentials are mounted read-only in containers
+- No credentials are persisted in Docker images
+- Temporary credential files are cleaned up after use
+
+#### For Kubernetes Mode
+1. **Never pass tokens via command line arguments in production**
+   - Tokens are visible in shell history and process lists
+   - Anyone with `ps` access can see the token
+
+2. **Secure token handling methods** (in order of preference):
+   ```bash
+   # Best: Use existing secret
+   kubectl create secret generic git-credentials \
+     --from-literal=token=YOUR_TOKEN -n default
+   ct run --execution-env kubernetes "your task"
+   
+   # Good: Use environment variable
+   export GITHUB_TOKEN=ghp_xxxxxxxxxxxxx
+   ct run --execution-env kubernetes "your task"
+   
+   # Risky: Direct token (only for testing)
+   ct run --execution-env kubernetes --git-token ghp_xxx "your task"
+   ```
+
+3. **Token permissions**
+   - Use fine-grained personal access tokens
+   - Grant only necessary repository permissions
+   - Set expiration dates on tokens
+   - Rotate tokens regularly
+
+4. **Clean up after direct token use**
+   ```bash
+   # Clear shell history
+   history -d $(history 1 | awk '{print $1}')
+   
+   # Or clear entire history
+   history -c
+   ```
+
+### Container Security
+- Docker containers run with limited privileges
+- No root access inside containers
+- Network isolation between containers
+- Volume mounts are read-only where possible
+
+### MCP Server Security
+- Approval tool permissions prevent unauthorized operations
+- All tool invocations are validated against permission format
+- MCP server runs with same privileges as the user
+- No remote access - stdio transport only
+
+### General Recommendations
+1. **Always use approval tools** instead of `--dangerously-skip-permissions`
+2. **Review Claude's actions** through HT-MCP web interface
+3. **Limit scope** of tasks to specific directories
+4. **Use read-only mounts** when possible
+5. **Audit logs** regularly for unexpected behavior
+6. **Keep software updated** - Claude Task, Docker, and dependencies
+
+### Reporting Security Issues
+If you discover a security vulnerability, please:
+1. Do NOT open a public issue
+2. Email security concerns to the maintainers
+3. Include steps to reproduce the issue
+4. Allow time for a fix before public disclosure
 
 ## Contributing
 

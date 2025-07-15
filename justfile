@@ -206,6 +206,12 @@ test:
     @echo "🧪 Running tests..."
     cargo test
 
+# Run only MCP tests
+[group('rust')]
+test-mcp:
+    @echo "🧪 Running MCP tests..."
+    cargo test -- --ignored mcp
+
 # Check code without building
 [group('rust')]
 check:
@@ -289,10 +295,10 @@ pre-commit:
         exit 1
     fi
     
-    # 4. Tests (only run if all checks passed)
-    echo "4️⃣  Running tests..."
-    if cargo test; then
-        echo "   ✅ All tests passed"
+    # 4. Tests (only run if all checks passed, excluding MCP tests)
+    echo "4️⃣  Running tests (excluding MCP tests)..."
+    if cargo test -- --skip mcp; then
+        echo "   ✅ All tests passed (MCP tests excluded from pre-commit)"
     else
         echo "   ❌ Some tests failed"
         echo ""
@@ -381,6 +387,40 @@ docker-bake-with-ht-mcp:
 test-docker:
     @echo "🐳 Testing Docker setup..."
     cd scripts && ./test-docker.sh
+
+# Login to GitHub Container Registry
+[group('docker')]
+docker-login username="$USER":
+    @echo "🔐 Logging in to GitHub Container Registry..."
+    @echo "Please ensure GITHUB_TOKEN environment variable is set"
+    @echo $GITHUB_TOKEN | docker login ghcr.io -u {{username}} --password-stdin
+
+# Build and push to GHCR (without HT-MCP)
+[group('docker')]
+docker-push: docker-login
+    @echo "🚀 Building and pushing to GHCR..."
+    VERSION=$(grep '^version = ' Cargo.toml | sed 's/version = "\(.*\)"/\1/') \
+    docker buildx bake -f docker/docker-bake.hcl claude-task-ghcr --push
+
+# Build and push to GHCR (with HT-MCP)
+[group('docker')]
+docker-push-with-ht-mcp: docker-login prepare-docker-with-ht-mcp
+    @echo "🚀 Building and pushing to GHCR (with HT-MCP)..."
+    VERSION=$(grep '^version = ' Cargo.toml | sed 's/version = "\(.*\)"/\1/') \
+    docker buildx bake -f docker/docker-bake.hcl claude-task-ghcr-with-ht-mcp --push
+
+# Build and push all variants to GHCR
+[group('docker')]
+docker-push-all: docker-login prepare-docker-with-ht-mcp
+    @echo "🚀 Building and pushing all variants to GHCR..."
+    VERSION=$(grep '^version = ' Cargo.toml | sed 's/version = "\(.*\)"/\1/') \
+    docker buildx bake -f docker/docker-bake.hcl ghcr --push
+
+# Pull latest image from GHCR
+[group('docker')]
+docker-pull variant="latest":
+    @echo "📥 Pulling ghcr.io/onegrep/claude-task:{{variant}}..."
+    docker pull ghcr.io/onegrep/claude-task:{{variant}}
 
 # HT-MCP Commands
 

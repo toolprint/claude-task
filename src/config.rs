@@ -1,8 +1,42 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, clap::ValueEnum)]
+#[serde(rename_all = "camelCase")]
+pub enum ExecutionEnvironment {
+    Docker,
+    Kubernetes,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KubeConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
+    pub image: String, // e.g., "ghcr.io/onegrep/claude-task:latest"
+    #[serde(default = "default_git_secret_name")]
+    pub git_secret_name: String,
+    #[serde(default = "default_git_secret_key")]
+    pub git_secret_key: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image_pull_secret: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub namespace_confirmed: bool,
+}
+
+fn default_git_secret_name() -> String {
+    "git-credentials".to_string()
+}
+
+fn default_git_secret_key() -> String {
+    "token".to_string()
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -11,8 +45,13 @@ pub struct Config {
     pub paths: PathConfig,
     pub docker: DockerConfig,
     pub claude_user_config: ClaudeUserConfig,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub claude_credentials: Option<ClaudeCredentials>,
     pub worktree: WorktreeConfig,
     pub global_option_defaults: GlobalOptionDefaults,
+    #[serde(rename = "taskRunner")]
+    pub task_runner: ExecutionEnvironment,
+    pub kube_config: Option<KubeConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -52,6 +91,12 @@ pub struct ClaudeUserConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ClaudeCredentials {
+    pub token: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct WorktreeConfig {
     pub default_open_command: Option<String>,
     pub auto_clean_on_remove: bool,
@@ -76,7 +121,7 @@ impl Default for Config {
                 branch_prefix: "claude-task/".to_string(),
             },
             docker: DockerConfig {
-                image_name: "claude-task:dev".to_string(),
+                image_name: "ghcr.io/onegrep/claude-task:latest".to_string(),
                 volume_prefix: "claude-task-".to_string(),
                 volumes: DockerVolumes {
                     home: "claude-task-home".to_string(),
@@ -99,6 +144,7 @@ impl Default for Config {
                 config_path: "~/.claude.json".to_string(),
                 user_memory_path: "~/.claude/CLAUDE.md".to_string(),
             },
+            claude_credentials: None,
             worktree: WorktreeConfig {
                 default_open_command: None,
                 auto_clean_on_remove: false,
@@ -109,6 +155,16 @@ impl Default for Config {
                 build_image_before_run: false,
                 require_ht_mcp: false,
             },
+            task_runner: ExecutionEnvironment::Docker,
+            kube_config: Some(KubeConfig {
+                context: None,
+                namespace: None,
+                image: "ghcr.io/onegrep/claude-task:latest".to_string(),
+                git_secret_name: default_git_secret_name(),
+                git_secret_key: default_git_secret_key(),
+                image_pull_secret: Some("ghcr-pull-secret".to_string()),
+                namespace_confirmed: false,
+            }),
         }
     }
 }
@@ -119,6 +175,61 @@ impl Config {
             .expect("Could not determine home directory")
             .join(".claude-task")
             .join("config.json")
+    }
+
+    /// Generate a unique namespace suffix based on machine metadata
+    pub fn generate_namespace_suffix() -> String {
+        let mut hasher = Sha256::new();
+
+        // Add hostname
+        if let Ok(hostname) = hostname::get() {
+            hasher.update(hostname.to_string_lossy().as_bytes());
+        }
+
+        // Add MAC addresses
+        #[cfg(target_os = "macos")]
+        {
+            if let Ok(output) = Command::new("ifconfig").output() {
+                hasher.update(&output.stdout);
+            }
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            if let Ok(output) = Command::new("ip").args(&["link", "show"]).output() {
+                hasher.update(&output.stdout);
+            }
+        }
+
+        // Add home directory path for additional uniqueness
+        if let Some(home) = dirs::home_dir() {
+            hasher.update(home.to_string_lossy().as_bytes());
+        }
+
+        // Get the hash and convert to hex
+        let result = hasher.finalize();
+        let hex = format!("{result:x}");
+
+        // Take first 6 characters for a short deterministic suffix
+        hex.chars().take(6).collect()
+    }
+
+    /// Get the current kubectl context
+    pub fn get_current_kube_context() -> Option<String> {
+        Command::new("kubectl")
+            .args(["config", "current-context"])
+            .output()
+            .ok()
+            .and_then(|output| {
+                if output.status.success() {
+                    String::from_utf8(output.stdout)
+                        .ok()
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                } else {
+                    None
+                }
+            })
     }
 
     pub fn load(path: Option<&PathBuf>) -> Result<Self> {
@@ -274,6 +385,18 @@ impl Config {
             anyhow::bail!(
                 "ht-mcp binary is required but not found. Please install ht-mcp or set 'requireHtMcp' to false in config."
             );
+        }
+
+        // Validate Kubernetes config if task runner is Kubernetes
+        if let ExecutionEnvironment::Kubernetes = self.task_runner {
+            if let Some(kube_config) = &self.kube_config {
+                // Context and namespace can be None (will be detected/generated)
+                if kube_config.image.is_empty() {
+                    anyhow::bail!("Kubernetes image cannot be empty");
+                }
+            } else {
+                anyhow::bail!("Kubernetes task runner requires a kube_config");
+            }
         }
 
         Ok(())

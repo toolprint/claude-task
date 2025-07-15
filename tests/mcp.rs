@@ -4,6 +4,7 @@ use std::process::Command;
 /// Test the MCP config functionality by running the CLI command
 /// Equivalent to: cargo run -- run --mcp-config test/test.mcp.json --debug --yes "list mcp servers"
 #[tokio::test]
+#[ignore = "mcp"]
 async fn test_mcp_config_validation() {
     // Get the project root directory
     let project_root = env::current_dir().expect("Failed to get current directory");
@@ -37,10 +38,12 @@ async fn test_mcp_config_validation() {
         .join("debug")
         .join("claude-task");
 
-    // Run the CLI command with MCP config
+    // Run the CLI command with MCP config, explicitly using Docker
     let output = Command::new(&binary_path)
         .args([
             "run",
+            "--execution-env",
+            "docker",
             "--mcp-config",
             mcp_config_path.to_str().unwrap(),
             "--debug",
@@ -86,6 +89,7 @@ async fn test_mcp_config_validation() {
 
 /// Test MCP config validation with non-existent file
 #[tokio::test]
+#[ignore = "mcp"]
 async fn test_mcp_config_file_not_found() {
     let project_root = env::current_dir().expect("Failed to get current directory");
 
@@ -107,10 +111,12 @@ async fn test_mcp_config_file_not_found() {
         .join("debug")
         .join("claude-task");
 
-    // Run with non-existent MCP config file
+    // Run with non-existent MCP config file, explicitly using Docker
     let output = Command::new(&binary_path)
         .args([
             "run",
+            "--execution-env",
+            "docker",
             "--mcp-config",
             "nonexistent.json",
             "--yes",
@@ -136,6 +142,7 @@ async fn test_mcp_config_file_not_found() {
 
 /// Test MCP config validation with relative path
 #[tokio::test]
+#[ignore = "mcp"]
 async fn test_mcp_config_relative_path() {
     let project_root = env::current_dir().expect("Failed to get current directory");
 
@@ -157,10 +164,12 @@ async fn test_mcp_config_relative_path() {
         .join("debug")
         .join("claude-task");
 
-    // Run with relative path to MCP config
+    // Run with relative path to MCP config, explicitly using Docker
     let output = Command::new(&binary_path)
         .args([
             "run",
+            "--execution-env",
+            "docker",
             "--mcp-config",
             "tests/test.mcp.json", // relative path
             "--debug",

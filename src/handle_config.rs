@@ -1,8 +1,9 @@
 use anyhow::{Context, Result};
+use dialoguer::Select;
 use std::path::PathBuf;
 use std::process::Command;
 
-use crate::config::Config;
+use crate::config::{Config, ExecutionEnvironment};
 use crate::ConfigCommands;
 
 pub async fn handle_config_command(
@@ -131,6 +132,60 @@ pub async fn handle_config_command(
                     "  Build Image Before Run: {}",
                     config.global_option_defaults.build_image_before_run
                 );
+                println!(
+                    "  Require HT-MCP: {}",
+                    config.global_option_defaults.require_ht_mcp
+                );
+                println!();
+                println!("Task Runner: {:?}", config.task_runner);
+
+                // Show Claude credentials status (masked)
+                println!();
+                println!("Claude Credentials:");
+                if let Some(credentials) = &config.claude_credentials {
+                    let masked_token = if credentials.token.len() > 8 {
+                        format!(
+                            "{}...{}",
+                            &credentials.token[..4],
+                            &credentials.token[credentials.token.len() - 4..]
+                        )
+                    } else {
+                        "****".to_string()
+                    };
+                    println!("  Token: {masked_token} (configured)");
+                } else {
+                    println!("  Token: <not configured>");
+                }
+
+                // Show Kubernetes config if present
+                if let Some(kube_config) = &config.kube_config {
+                    println!();
+                    println!("Kubernetes Configuration:");
+                    println!(
+                        "  Context: {}",
+                        kube_config
+                            .context
+                            .as_ref()
+                            .unwrap_or(&"<auto-detect>".to_string())
+                    );
+                    println!(
+                        "  Namespace: {}",
+                        kube_config
+                            .namespace
+                            .as_ref()
+                            .unwrap_or(&"<auto-generate>".to_string())
+                    );
+                    println!("  Image: {}", kube_config.image);
+                    println!("  Git Secret Name: {}", kube_config.git_secret_name);
+                    println!("  Git Secret Key: {}", kube_config.git_secret_key);
+                    if let Some(pull_secret) = &kube_config.image_pull_secret {
+                        println!("  Image Pull Secret: {pull_secret}");
+                    }
+                    println!("  Namespace Confirmed: {}", kube_config.namespace_confirmed);
+                } else {
+                    println!();
+                    println!("Kubernetes Configuration: <not configured>");
+                }
             }
         }
         ConfigCommands::Validate => {
@@ -158,6 +213,91 @@ pub async fn handle_config_command(
                     return Err(e);
                 }
             }
+        }
+        ConfigCommands::Runner { runner } => {
+            let path = config_path
+                .cloned()
+                .unwrap_or_else(Config::default_config_path);
+
+            let mut config = Config::load(Some(&path))?;
+
+            // If runner not specified, show interactive selection
+            let new_runner = if let Some(r) = runner {
+                r
+            } else {
+                println!("Select task runner:");
+                let options = vec!["Docker", "Kubernetes"];
+                let current_idx = match config.task_runner {
+                    ExecutionEnvironment::Docker => 0,
+                    ExecutionEnvironment::Kubernetes => 1,
+                };
+
+                let selection = Select::new()
+                    .items(&options)
+                    .default(current_idx)
+                    .interact()?;
+
+                match selection {
+                    0 => ExecutionEnvironment::Docker,
+                    1 => ExecutionEnvironment::Kubernetes,
+                    _ => unreachable!(),
+                }
+            };
+
+            // Update config
+            let old_runner = config.task_runner.clone();
+            config.task_runner = new_runner.clone();
+
+            // Save config
+            config.save(&path)?;
+
+            println!("✅ Task runner updated: {old_runner:?} → {new_runner:?}");
+
+            // Show additional setup instructions if switching to Kubernetes
+            if new_runner == ExecutionEnvironment::Kubernetes
+                && old_runner != ExecutionEnvironment::Kubernetes
+            {
+                println!();
+                println!("ℹ️  You've switched to Kubernetes mode. Next steps:");
+                println!("   1. Run: claude setup kubernetes");
+                println!("   2. Ensure you have GITHUB_TOKEN set or gh CLI authenticated");
+                println!("   3. Run tasks with: claude run \"your task\"");
+            }
+        }
+        ConfigCommands::Token => {
+            let path = config_path
+                .cloned()
+                .unwrap_or_else(Config::default_config_path);
+
+            let mut config = Config::load(Some(&path))?;
+
+            // Prompt for token using password input
+            use dialoguer::Password;
+
+            println!("📝 Set Claude OAuth Token");
+            println!();
+            println!("Please paste your long-lived token from 'claude setup-token'.");
+            println!("The token will be hidden as you type/paste.");
+            println!();
+
+            let token = Password::new().with_prompt("Token").interact()?;
+
+            if token.is_empty() {
+                println!("❌ Token cannot be empty");
+                return Ok(());
+            }
+
+            // Update config with token
+            config.claude_credentials = Some(crate::config::ClaudeCredentials { token });
+
+            // Save config
+            config.save(&path)?;
+
+            println!();
+            println!("✅ Claude OAuth token saved successfully!");
+            println!();
+            println!("Your claude-task setup can now use this token for authentication.");
+            println!("The token will be injected as CLAUDE_CODE_OAUTH_TOKEN in containers.");
         }
     }
 

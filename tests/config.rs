@@ -19,13 +19,17 @@ fn test_config_init_creates_default_config() -> Result<()> {
     let temp_dir = TempDir::new()?;
     let config_path = temp_dir.path().join("test-config.json");
 
-    let (stdout, _stderr, success) = run_claude_task(&[
+    let (stdout, stderr, success) = run_claude_task(&[
         "--config-path",
         config_path.to_str().unwrap(),
         "config",
         "init",
     ])?;
 
+    if !success {
+        eprintln!("stdout: {}", stdout);
+        eprintln!("stderr: {}", stderr);
+    }
     assert!(success);
     assert!(stdout.contains("Created config file at:"));
     assert!(config_path.exists());
@@ -33,8 +37,9 @@ fn test_config_init_creates_default_config() -> Result<()> {
     // Verify config content
     let content = std::fs::read_to_string(&config_path)?;
     let config: serde_json::Value = serde_json::from_str(&content)?;
-    assert_eq!(config["version"], "0.1.0");
+    assert_eq!(config["version"], env!("CARGO_PKG_VERSION"));
     assert_eq!(config["paths"]["branchPrefix"], "claude-task/");
+    assert_eq!(config["taskRunner"], "docker");
 
     Ok(())
 }
@@ -83,7 +88,7 @@ fn test_config_init_force_overwrites() -> Result<()> {
     // Verify it was overwritten with default
     let content = std::fs::read_to_string(&config_path)?;
     let config: serde_json::Value = serde_json::from_str(&content)?;
-    assert_eq!(config["version"], "0.1.0");
+    assert_eq!(config["version"], env!("CARGO_PKG_VERSION"));
 
     Ok(())
 }
@@ -167,7 +172,8 @@ fn test_config_show_json_format() -> Result<()> {
 
     // Verify it's valid JSON
     let config: serde_json::Value = serde_json::from_str(&stdout)?;
-    assert_eq!(config["version"], "0.1.0");
+    assert_eq!(config["version"], env!("CARGO_PKG_VERSION"));
+    assert!(config.get("taskRunner").is_some());
 
     Ok(())
 }
@@ -194,9 +200,10 @@ fn test_config_show_pretty_format() -> Result<()> {
 
     assert!(success);
     assert!(stdout.contains("Claude Task Configuration"));
-    assert!(stdout.contains("Version: 0.1.0"));
+    assert!(stdout.contains("Version:"));
     assert!(stdout.contains("Worktree Base Dir:"));
     assert!(stdout.contains("Docker:"));
+    assert!(stdout.contains("Task Runner:"));
 
     Ok(())
 }
@@ -243,7 +250,9 @@ fn test_config_cli_args_override() -> Result<()> {
             "containerNamePrefix": "claude-task-",
             "defaultWebViewProxyPort": 4618,
             "defaultHtMcpPort": null,
-            "environmentVariables": {}
+            "environmentVariables": {
+                "CLAUDE_CONFIG_DIR": "/home/node/.claude"
+            }
         },
         "claudeUserConfig": {
             "configPath": "~/.claude.json",
@@ -258,6 +267,16 @@ fn test_config_cli_args_override() -> Result<()> {
             "openEditorAfterCreate": false,
             "buildImageBeforeRun": false,
             "requireHtMcp": false
+        },
+        "taskRunner": "docker",
+        "kubeConfig": {
+            "context": null,
+            "namespace": null,
+            "image": "ghcr.io/onegrep/claude-task:latest",
+            "gitSecretName": "git-credentials",
+            "gitSecretKey": "token",
+            "imagePullSecret": "ghcr-pull-secret",
+            "namespaceConfirmed": false
         }
     }"#;
 

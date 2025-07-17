@@ -2,7 +2,7 @@
 
 # Get the GitHub organization from environment variable or gh CLI
 if [ -n "$CLAUDE_TASK_DOCKER_ORG" ]; then
-    ORG="$CLAUDE_TASK_DOCKER_ORG"
+    ORG=$(echo "$CLAUDE_TASK_DOCKER_ORG" | tr '[:upper:]' '[:lower:]')
 else
     # Try to get the repository owner using gh CLI
     if command -v gh &> /dev/null; then
@@ -15,7 +15,7 @@ else
     fi
 fi
 
-# Generate the Docker image name
+# Generate the Docker image name (org is already lowercase)
 DOCKER_IMAGE="ghcr.io/${ORG}/claude-task:latest"
 
 # Create the constants file

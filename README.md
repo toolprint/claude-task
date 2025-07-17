@@ -113,7 +113,7 @@ Claude Task supports two authentication methods:
 ### Build from Source
 ```bash
 # Clone the repository
-git clone <repository-url>
+git clone https://github.com/toolprint/claude-task.git
 cd claude-task
 
 # Build the project
@@ -256,7 +256,7 @@ claude setup kubernetes
 
 #### Setup and Authentication
 
-Claud Task uses persistent secrets created during setup for secure, consistent authentication:
+Claude Task uses persistent secrets created during setup for secure, consistent authentication:
 
 ##### One-Time Setup (Recommended Approach)
 ```bash

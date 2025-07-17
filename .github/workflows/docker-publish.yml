@@ -86,6 +86,7 @@ jobs:
         run: |
           VERSION=${{ steps.version.outputs.VERSION }} \
           DOCKER_TAG=${{ steps.docker_tag.outputs.DOCKER_TAG }} \
+          GITHUB_ORG=${{ github.repository_owner }} \
           docker buildx bake -f docker/docker-bake.hcl claude-task-linux
 
       - name: Build and push Docker image
@@ -93,6 +94,7 @@ jobs:
         run: |
           VERSION=${{ steps.version.outputs.VERSION }} \
           DOCKER_TAG=${{ steps.docker_tag.outputs.DOCKER_TAG }} \
+          GITHUB_ORG=${{ github.repository_owner }} \
           docker buildx bake -f docker/docker-bake.hcl claude-task-ghcr --push
 
 
@@ -102,11 +104,11 @@ jobs:
           echo "## Docker Images Published 🐳" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Images" >> $GITHUB_STEP_SUMMARY
-          echo "- \`ghcr.io/onegrep/claude-task:latest\`" >> $GITHUB_STEP_SUMMARY
-          echo "- \`ghcr.io/onegrep/claude-task:v${{ steps.version.outputs.VERSION }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- \`ghcr.io/onegrep/claude-task:${{ steps.docker_tag.outputs.DOCKER_TAG }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- \`${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest\`" >> $GITHUB_STEP_SUMMARY
+          echo "- \`${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:v${{ steps.version.outputs.VERSION }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- \`${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.docker_tag.outputs.DOCKER_TAG }}\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Pull Command" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
-          echo "docker pull ghcr.io/onegrep/claude-task:latest" >> $GITHUB_STEP_SUMMARY
+          echo "docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY

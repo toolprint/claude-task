@@ -330,57 +330,12 @@ sync-modules:
     @echo "🔄 Syncing git submodules..."
     git submodule update --init --recursive --remote
 
-# Build ht-mcp submodule release
-[group('git')]
-build-ht-mcp version="latest":
-    @echo "🔨 Building ht-mcp submodule (version: {{version}})..."
-    @if [ ! -d "modules/ht-mcp" ]; then echo "❌ ht-mcp submodule not found. Run 'just sync-modules' first."; exit 1; fi
-    cd modules/ht-mcp && chmod +x build-release.sh && ./build-release.sh {{version}}
-
 # Docker Commands
 
-# Prepare Docker build (default: without ht-mcp)
-[group('docker')]
-prepare-docker:
-    @echo "🔨 Preparing Docker build (without ht-mcp)..."
-    @echo "ℹ️  For lightweight Docker images, ht-mcp binaries are not included by default"
-    @echo "   Use 'just prepare-docker-with-ht-mcp' if you need ht-mcp functionality"
-    @echo "✅ Docker build preparation complete (no ht-mcp binaries needed)"
-
-# Prepare Docker build with ht-mcp binaries included
-[group('docker')]
-prepare-docker-with-ht-mcp:
-    #!/usr/bin/env bash
-    echo "🔨 Preparing ht-mcp binaries for Docker build..."
-    
-    # Try to build ht-mcp, but continue if it fails (Windows builds might fail on macOS/Linux)
-    if just build-ht-mcp; then
-        echo "✅ ht-mcp build completed successfully"
-    else
-        echo "⚠️  ht-mcp build had errors (likely Windows targets), continuing with existing binaries..."
-    fi
-    
-    # Check if we have the required Linux binaries
-    if [ ! -f "modules/ht-mcp/release/latest/ht-mcp-linux-x86_64" ] || [ ! -f "modules/ht-mcp/release/latest/ht-mcp-linux-aarch64" ]; then
-        echo "❌ Required Linux binaries not found in modules/ht-mcp/release/latest/"
-        echo "   Please ensure ht-mcp-linux-x86_64 and ht-mcp-linux-aarch64 exist"
-        exit 1
-    fi
-    
-    echo "📁 Copying ht-mcp release files to docker/ht-mcp-release..."
-    rm -rf docker/ht-mcp-release
-    cp -r modules/ht-mcp/release docker/ht-mcp-release
-    echo "✅ Docker build preparation complete (with ht-mcp binaries)"
-
-# Build Docker image using buildx (default: without ht-mcp)
+# Build Docker image using buildx
 [group('docker')]
 docker-bake:
-    @docker buildx bake -f docker/docker-bake.hcl --no-cache
-
-# Build Docker image with ht-mcp included
-[group('docker')]
-docker-bake-with-ht-mcp:
-    @docker buildx bake -f docker/docker-bake.hcl with-ht-mcp --no-cache
+    @docker buildx bake -f docker/docker-bake.hcl
 
 # Test Docker setup
 [group('docker')]
@@ -395,23 +350,16 @@ docker-login username="$USER":
     @echo "Please ensure GITHUB_TOKEN environment variable is set"
     @echo $GITHUB_TOKEN | docker login ghcr.io -u {{username}} --password-stdin
 
-# Build and push to GHCR (without HT-MCP)
+# Build and push to GHCR
 [group('docker')]
 docker-push: docker-login
     @echo "🚀 Building and pushing to GHCR..."
     VERSION=$(grep '^version = ' Cargo.toml | sed 's/version = "\(.*\)"/\1/') \
     docker buildx bake -f docker/docker-bake.hcl claude-task-ghcr --push
 
-# Build and push to GHCR (with HT-MCP)
-[group('docker')]
-docker-push-with-ht-mcp: docker-login prepare-docker-with-ht-mcp
-    @echo "🚀 Building and pushing to GHCR (with HT-MCP)..."
-    VERSION=$(grep '^version = ' Cargo.toml | sed 's/version = "\(.*\)"/\1/') \
-    docker buildx bake -f docker/docker-bake.hcl claude-task-ghcr-with-ht-mcp --push
-
 # Build and push all variants to GHCR
 [group('docker')]
-docker-push-all: docker-login prepare-docker-with-ht-mcp
+docker-push-all: docker-login
     @echo "🚀 Building and pushing all variants to GHCR..."
     VERSION=$(grep '^version = ' Cargo.toml | sed 's/version = "\(.*\)"/\1/') \
     docker buildx bake -f docker/docker-bake.hcl ghcr --push
@@ -421,69 +369,4 @@ docker-push-all: docker-login prepare-docker-with-ht-mcp
 docker-pull variant="latest":
     @echo "📥 Pulling ghcr.io/onegrep/claude-task:{{variant}}..."
     docker pull ghcr.io/onegrep/claude-task:{{variant}}
-
-# HT-MCP Commands
-
-# Setup and test HT-MCP integration
-[group('ht-mcp')]
-test-ht-mcp:
-    @echo "🧪 Testing HT-MCP integration..."
-    cd scripts && ./test-ht-mcp.sh
-
-# Run claude-task with HT-MCP (with approval tool)
-[group('ht-mcp')]
-run-ht-mcp prompt="" port="3618" *args:
-    #!/usr/bin/env bash
-    echo "🚀 Running claude-task with HT-MCP..."
-    cd scripts
-    if [ -z "{{prompt}}" ]; then
-        ./run-with-ht-mcp.sh -a {{args}} {{port}}
-    else
-        ./run-with-ht-mcp.sh -a {{args}} {{port}} "{{prompt}}"
-    fi
-
-# Run claude-task with HT-MCP in debug mode
-[group('ht-mcp')]
-run-ht-mcp-debug prompt="" port="3618" *args:
-    #!/usr/bin/env bash
-    echo "🔍 Running claude-task with HT-MCP (debug mode)..."
-    cd scripts
-    if [ -z "{{prompt}}" ]; then
-        ./run-with-ht-mcp.sh -a -d {{args}} {{port}}
-    else
-        ./run-with-ht-mcp.sh -a -d {{args}} {{port}} "{{prompt}}"
-    fi
-
-# Start local nginx test environment
-[group('ht-mcp')]
-test-nginx-local:
-    #!/usr/bin/env bash
-    echo "🌐 Starting local nginx test environment..."
-    echo "Starting nginx proxy in background..."
-    cd examples/local-nginx-test
-    chmod +x start-nginx.sh
-    ./start-nginx.sh &
-    NGINX_PID=$!
-    cd - > /dev/null
-    echo "✅ Nginx proxy started (PID: $NGINX_PID)"
-    echo ""
-    echo "📋 Next steps:"
-    echo "  1. Nginx is now running, proxying localhost:3619 -> localhost:3618"
-    echo "  2. In another terminal, start Claude Code with HT-MCP configured"
-    echo "  3. Use ht_create_session with enableWebServer: true"
-    echo "  4. Open http://localhost:3618 to test the web interface"
-    echo ""
-    echo "⏹️  Press Ctrl+C to stop nginx and exit"
-    echo ""
-    
-    # Function to cleanup
-    cleanup() {
-        echo "Stopping nginx (PID: $NGINX_PID)..."
-        kill $NGINX_PID 2>/dev/null || true
-        exit
-    }
-    trap cleanup SIGTERM SIGINT
-    
-    # Wait for user to stop
-    wait $NGINX_PID
 

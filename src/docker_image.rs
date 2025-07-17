@@ -21,7 +21,7 @@ pub fn get_default_docker_image() -> String {
             let json_str = String::from_utf8_lossy(&output.stdout);
             
             // Simple JSON parsing for owner.login
-            // Expected format: {"owner":{"id":"...","login":"OneGrep"}}
+            // Expected format: {"owner":{"id":"...","login":"toolprint"}}
             if let Some(start) = json_str.find(r#""login":"#) {
                 let start = start + 9; // length of "login":"
                 if let Some(end) = json_str[start..].find('"') {
@@ -33,7 +33,7 @@ pub fn get_default_docker_image() -> String {
     }
     
     // Default fallback
-    "ghcr.io/onegrep/claude-task:latest".to_string()
+    "ghcr.io/toolprint/claude-task:latest".to_string()
 }
 
 /// Lazy static to cache the Docker image name

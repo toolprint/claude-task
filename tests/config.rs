@@ -8,8 +8,8 @@ fn get_expected_docker_image() -> String {
     if let Ok(org) = std::env::var("CLAUDE_TASK_DOCKER_ORG") {
         format!("ghcr.io/{}/claude-task:latest", org)
     } else {
-        // Default to onegrep for tests
-        "ghcr.io/onegrep/claude-task:latest".to_string()
+        // Default to toolprint for tests
+        "ghcr.io/toolprint/claude-task:latest".to_string()
     }
 }
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env -S just --justfile
 
 # Get GitHub organization from git remote or environment variable
-github_org := env("CLAUDE_TASK_DOCKER_ORG", `git remote get-url origin 2>/dev/null | sed -E 's|.*github.com[:/]([^/]+)/.*|\1|' | tr '[:upper:]' '[:lower:]' || echo "onegrep"`)
+github_org := env("CLAUDE_TASK_DOCKER_ORG", `git remote get-url origin 2>/dev/null | sed -E 's|.*github.com[:/]([^/]+)/.*|\1|' | tr '[:upper:]' '[:lower:]' || echo "toolprint"`)
 
 # Docker image name based on GitHub organization
 docker_image := "ghcr.io/" + github_org + "/claude-task"

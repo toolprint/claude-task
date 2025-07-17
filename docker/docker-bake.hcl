@@ -28,7 +28,7 @@ variable "VERSION" {
 }
 
 variable "GITHUB_ORG" {
-  default = "onegrep"
+  default = "toolprint"
 }
 
 # GHCR target

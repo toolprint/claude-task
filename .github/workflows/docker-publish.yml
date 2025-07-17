@@ -81,12 +81,20 @@ jobs:
           echo "DOCKER_TAG=${DOCKER_TAG}" >> $GITHUB_OUTPUT
           echo "Using Docker tag: ${DOCKER_TAG}"
 
+      - name: Determine GitHub organization (lowercase)
+        id: github_org
+        run: |
+          # Convert organization name to lowercase for Docker registry compliance
+          GITHUB_ORG=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          echo "GITHUB_ORG=${GITHUB_ORG}" >> $GITHUB_OUTPUT
+          echo "Using GitHub org: ${GITHUB_ORG}"
+
       - name: Build Docker image
         if: github.event_name == 'pull_request'
         run: |
           VERSION=${{ steps.version.outputs.VERSION }} \
           DOCKER_TAG=${{ steps.docker_tag.outputs.DOCKER_TAG }} \
-          GITHUB_ORG=${{ github.repository_owner }} \
+          GITHUB_ORG=${{ steps.github_org.outputs.GITHUB_ORG }} \
           docker buildx bake -f docker/docker-bake.hcl claude-task-linux
 
       - name: Build and push Docker image
@@ -94,7 +102,7 @@ jobs:
         run: |
           VERSION=${{ steps.version.outputs.VERSION }} \
           DOCKER_TAG=${{ steps.docker_tag.outputs.DOCKER_TAG }} \
-          GITHUB_ORG=${{ github.repository_owner }} \
+          GITHUB_ORG=${{ steps.github_org.outputs.GITHUB_ORG }} \
           docker buildx bake -f docker/docker-bake.hcl claude-task-ghcr --push
 
 

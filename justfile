@@ -1,5 +1,11 @@
 #!/usr/bin/env -S just --justfile
 
+# Get GitHub organization from git remote or environment variable
+github_org := env("CLAUDE_TASK_DOCKER_ORG", `git remote get-url origin 2>/dev/null | sed -E 's|.*github.com[:/]([^/]+)/.*|\1|' | tr '[:upper:]' '[:lower:]' || echo "onegrep"`)
+
+# Docker image name based on GitHub organization
+docker_image := "ghcr.io/" + github_org + "/claude-task"
+
 _default:
     @just -l -u
 
@@ -14,12 +20,14 @@ brew:
 [group('rust')]
 build:
     @echo "🔨 Building claude-task..."
+    @./scripts/generate_docker_constant.sh
     cargo build
 
 # Build in release mode
 [group('rust')]
 build-release:
     @echo "🔨 Building claude-task (release)..."
+    @./scripts/generate_docker_constant.sh
     cargo build --release
     @just release-info
 
@@ -335,7 +343,7 @@ sync-modules:
 # Build Docker image using buildx
 [group('docker')]
 docker-bake:
-    @docker buildx bake -f docker/docker-bake.hcl
+    @GITHUB_ORG={{github_org}} docker buildx bake -f docker/docker-bake.hcl
 
 # Test Docker setup
 [group('docker')]
@@ -355,6 +363,7 @@ docker-login username="$USER":
 docker-push: docker-login
     @echo "🚀 Building and pushing to GHCR..."
     VERSION=$(grep '^version = ' Cargo.toml | sed 's/version = "\(.*\)"/\1/') \
+    GITHUB_ORG={{github_org}} \
     docker buildx bake -f docker/docker-bake.hcl claude-task-ghcr --push
 
 # Build and push all variants to GHCR
@@ -362,11 +371,12 @@ docker-push: docker-login
 docker-push-all: docker-login
     @echo "🚀 Building and pushing all variants to GHCR..."
     VERSION=$(grep '^version = ' Cargo.toml | sed 's/version = "\(.*\)"/\1/') \
+    GITHUB_ORG={{github_org}} \
     docker buildx bake -f docker/docker-bake.hcl ghcr --push
 
 # Pull latest image from GHCR
 [group('docker')]
 docker-pull variant="latest":
-    @echo "📥 Pulling ghcr.io/onegrep/claude-task:{{variant}}..."
-    docker pull ghcr.io/onegrep/claude-task:{{variant}}
+    @echo "📥 Pulling {{docker_image}}:{{variant}}..."
+    docker pull {{docker_image}}:{{variant}}
 

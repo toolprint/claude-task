@@ -3,6 +3,16 @@ use std::path::PathBuf;
 use std::process::Command;
 use tempfile::TempDir;
 
+/// Get the expected Docker image name based on environment or default
+fn get_expected_docker_image() -> String {
+    if let Ok(org) = std::env::var("CLAUDE_TASK_DOCKER_ORG") {
+        format!("ghcr.io/{}/claude-task:latest", org)
+    } else {
+        // Default to onegrep for tests
+        "ghcr.io/onegrep/claude-task:latest".to_string()
+    }
+}
+
 /// Helper to run claude-task with arguments and capture output
 fn run_claude_task(args: &[&str]) -> Result<(String, String, bool)> {
     let exe_path = PathBuf::from(env!("CARGO_BIN_EXE_claude-task"));
@@ -232,53 +242,56 @@ fn test_config_cli_args_override() -> Result<()> {
     let config_path = temp_dir.path().join("test-config.json");
 
     // Create a config with custom values
-    let custom_config = r#"{
+    let custom_config = format!(
+        r#"{{
         "version": "0.1.0",
-        "paths": {
+        "paths": {{
             "worktreeBaseDir": "~/custom-worktrees",
             "taskBaseHomeDir": "~/custom-home",
             "branchPrefix": "custom/"
-        },
-        "docker": {
+        }},
+        "docker": {{
             "imageName": "claude-task:dev",
             "volumePrefix": "claude-task-",
-            "volumes": {
+            "volumes": {{
                 "home": "claude-task-home",
                 "npmCache": "claude-task-npm-cache",
                 "nodeCache": "claude-task-node-cache"
-            },
+            }},
             "containerNamePrefix": "claude-task-",
             "defaultWebViewProxyPort": 4618,
             "defaultHtMcpPort": null,
-            "environmentVariables": {
+            "environmentVariables": {{
                 "CLAUDE_CONFIG_DIR": "/home/node/.claude"
-            }
-        },
-        "claudeUserConfig": {
+            }}
+        }},
+        "claudeUserConfig": {{
             "configPath": "~/.claude.json",
             "userMemoryPath": "~/.claude/CLAUDE.md"
-        },
-        "worktree": {
+        }},
+        "worktree": {{
             "defaultOpenCommand": null,
             "autoCleanOnRemove": false
-        },
-        "globalOptionDefaults": {
+        }},
+        "globalOptionDefaults": {{
             "debug": true,
             "openEditorAfterCreate": false,
             "buildImageBeforeRun": false,
             "requireHtMcp": false
-        },
+        }},
         "taskRunner": "docker",
-        "kubeConfig": {
+        "kubeConfig": {{
             "context": null,
             "namespace": null,
-            "image": "ghcr.io/onegrep/claude-task:latest",
+            "image": "{}",
             "gitSecretName": "git-credentials",
             "gitSecretKey": "token",
             "imagePullSecret": "ghcr-pull-secret",
             "namespaceConfirmed": false
-        }
-    }"#;
+        }}
+    }}"#,
+        get_expected_docker_image()
+    );
 
     std::fs::write(&config_path, custom_config)?;
 

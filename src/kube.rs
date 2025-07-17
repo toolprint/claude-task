@@ -1,6 +1,9 @@
 use anyhow::Result;
 
 use anyhow::Context;
+
+// Include the generated constants
+include!("generated_constants.rs");
 use futures::{StreamExt, TryStreamExt};
 use k8s_openapi::api::{
     batch::v1::{Job, JobSpec},
@@ -192,7 +195,7 @@ impl KubernetesJobRunner {
         let image = config
             .image
             .clone()
-            .unwrap_or_else(|| "ghcr.io/onegrep/claude-task:latest".to_string());
+            .unwrap_or_else(|| DEFAULT_DOCKER_IMAGE.to_string());
 
         let git_branch = config
             .git_branch

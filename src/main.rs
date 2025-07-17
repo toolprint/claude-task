@@ -5,6 +5,9 @@ use std::path::{Path, PathBuf};
 // Include the generated MCP help text
 include!(concat!(env!("OUT_DIR"), "/mcp_help.rs"));
 
+// Include the generated constants
+include!("generated_constants.rs");
+
 mod assets;
 mod config;
 mod credential_sync;
@@ -1554,7 +1557,7 @@ async fn main() -> Result<()> {
                     kube_config_override = Some(config::KubeConfig {
                         namespace: kube_namespace.clone(),
                         context: kube_context.clone(),
-                        image: "ghcr.io/onegrep/claude-task:latest".to_string(),
+                        image: DEFAULT_DOCKER_IMAGE.to_string(),
                         git_secret_name: "git-credentials".to_string(),
                         git_secret_key: "token".to_string(),
                         image_pull_secret: Some("ghcr-pull-secret".to_string()),

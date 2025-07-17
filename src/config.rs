@@ -5,6 +5,9 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+// Include the generated constants
+include!("generated_constants.rs");
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, clap::ValueEnum)]
 #[serde(rename_all = "camelCase")]
 pub enum ExecutionEnvironment {
@@ -19,7 +22,7 @@ pub struct KubeConfig {
     pub context: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub namespace: Option<String>,
-    pub image: String, // e.g., "ghcr.io/onegrep/claude-task:latest"
+    pub image: String, // e.g., "ghcr.io/{org}/claude-task:latest"
     #[serde(default = "default_git_secret_name")]
     pub git_secret_name: String,
     #[serde(default = "default_git_secret_key")]
@@ -121,7 +124,7 @@ impl Default for Config {
                 branch_prefix: "claude-task/".to_string(),
             },
             docker: DockerConfig {
-                image_name: "ghcr.io/onegrep/claude-task:latest".to_string(),
+                image_name: DEFAULT_DOCKER_IMAGE.to_string(),
                 volume_prefix: "claude-task-".to_string(),
                 volumes: DockerVolumes {
                     home: "claude-task-home".to_string(),
@@ -159,7 +162,7 @@ impl Default for Config {
             kube_config: Some(KubeConfig {
                 context: None,
                 namespace: None,
-                image: "ghcr.io/onegrep/claude-task:latest".to_string(),
+                image: DEFAULT_DOCKER_IMAGE.to_string(),
                 git_secret_name: default_git_secret_name(),
                 git_secret_key: default_git_secret_key(),
                 image_pull_secret: Some("ghcr-pull-secret".to_string()),

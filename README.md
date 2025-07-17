@@ -130,7 +130,9 @@ just install
 
 ### Docker Images
 
-Claude Task Docker images are available on GitHub Container Registry (GHCR):
+Claude Task Docker images are available on GitHub Container Registry (GHCR).
+
+> **Note**: The Docker image organization name (`onegrep` in the examples below) is automatically determined based on the GitHub repository owner. If you fork this repository, the image will be published under your organization name.
 
 #### Available Images
 - `ghcr.io/onegrep/claude-task:latest` - Latest stable release (unified image for Docker and Kubernetes)

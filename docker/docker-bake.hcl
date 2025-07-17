@@ -27,13 +27,17 @@ variable "VERSION" {
   default = "0.1.0"
 }
 
+variable "GITHUB_ORG" {
+  default = "onegrep"
+}
+
 # GHCR target
 target "claude-task-ghcr" {
   inherits = ["claude-task-linux"]
   tags = [
-    "ghcr.io/onegrep/claude-task:latest",
-    "ghcr.io/onegrep/claude-task:v${VERSION}",
-    "ghcr.io/onegrep/claude-task:${DOCKER_TAG}"
+    "ghcr.io/${GITHUB_ORG}/claude-task:latest",
+    "ghcr.io/${GITHUB_ORG}/claude-task:v${VERSION}",
+    "ghcr.io/${GITHUB_ORG}/claude-task:${DOCKER_TAG}"
   ]
   platforms = ["linux/amd64", "linux/arm64"]
   output = ["type=registry"]

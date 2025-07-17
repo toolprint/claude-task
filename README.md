@@ -113,7 +113,7 @@ Claude Task supports two authentication methods:
 ### Build from Source
 ```bash
 # Clone the repository
-git clone <repository-url>
+git clone https://github.com/toolprint/claude-task.git
 cd claude-task
 
 # Build the project
@@ -132,28 +132,28 @@ just install
 
 Claude Task Docker images are available on GitHub Container Registry (GHCR).
 
-> **Note**: The Docker image organization name (`onegrep` in the examples below) is automatically determined based on the GitHub repository owner. If you fork this repository, the image will be published under your organization name.
+> **Note**: The Docker image organization name (`toolprint` in the examples below) is automatically determined based on the GitHub repository owner. If you fork this repository, the image will be published under your organization name.
 
 #### Available Images
-- `ghcr.io/onegrep/claude-task:latest` - Latest stable release (unified image for Docker and Kubernetes)
-- `ghcr.io/onegrep/claude-task:v0.1.0` - Specific version
-- `ghcr.io/onegrep/claude-task:latest-with-ht-mcp` - With HT-MCP web terminal support
+- `ghcr.io/toolprint/claude-task:latest` - Latest stable release (unified image for Docker and Kubernetes)
+- `ghcr.io/toolprint/claude-task:v0.1.0` - Specific version
+- `ghcr.io/toolprint/claude-task:latest-with-ht-mcp` - With HT-MCP web terminal support
 
 **Note**: The same unified Docker image is used for both local Docker and Kubernetes deployments, ensuring consistency and feature parity across environments.
 
 #### Pulling Images
 ```bash
 # Pull the latest image
-docker pull ghcr.io/onegrep/claude-task:latest
+docker pull ghcr.io/toolprint/claude-task:latest
 
 # Pull with HT-MCP support
-docker pull ghcr.io/onegrep/claude-task:latest-with-ht-mcp
+docker pull ghcr.io/toolprint/claude-task:latest-with-ht-mcp
 
 # Run directly
 docker run -it --rm \
   -v $(pwd):/workspace \
   -v claude-task-home:/home/base:ro \
-  ghcr.io/onegrep/claude-task:latest \
+  ghcr.io/toolprint/claude-task:latest \
   claude -p "Your task here"
 ```
 
@@ -215,7 +215,7 @@ claude-task version  # or: claude-task v
 
 Claude Task supports running jobs in Kubernetes clusters for distributed execution. This is useful for running tasks in cloud environments or when you don't have Docker available locally.
 
-The same Docker image (`ghcr.io/onegrep/claude-task:latest`) is used for both local Docker and Kubernetes deployments, ensuring consistency across environments.
+The same Docker image (`ghcr.io/toolprint/claude-task:latest`) is used for both local Docker and Kubernetes deployments, ensuring consistency across environments.
 
 #### Prerequisites
 - Access to a Kubernetes cluster
@@ -256,7 +256,7 @@ claude setup kubernetes
 
 #### Setup and Authentication
 
-Claud Task uses persistent secrets created during setup for secure, consistent authentication:
+Claude Task uses persistent secrets created during setup for secure, consistent authentication:
 
 ##### One-Time Setup (Recommended Approach)
 ```bash
@@ -309,7 +309,7 @@ You can set defaults in `~/.claude-task/config.json`:
   "kubeConfig": {
     "context": "my-cluster",
     "namespace": "development",
-    "image": "ghcr.io/onegrep/claude-task:latest",
+    "image": "ghcr.io/toolprint/claude-task:latest",
     "gitSecretName": "git-credentials",
     "gitSecretKey": "token",
     "imagePullSecret": "ghcr-pull-secret",
@@ -587,7 +587,7 @@ claude-task --config-path ~/my-config.json config show
     "branchPrefix": "claude-task/"
   },
   "docker": {
-    "imageName": "ghcr.io/onegrep/claude-task:latest",
+    "imageName": "ghcr.io/toolprint/claude-task:latest",
     "volumePrefix": "claude-task-",
     "volumes": {
       "home": "claude-task-home",
@@ -622,7 +622,7 @@ claude-task --config-path ~/my-config.json config show
   "kubeConfig": {
     "context": "my-cluster",
     "namespace": "claude-task-a1b2c3",
-    "image": "ghcr.io/onegrep/claude-task:latest",
+    "image": "ghcr.io/toolprint/claude-task:latest",
     "gitSecretName": "git-credentials",
     "gitSecretKey": "token",
     "imagePullSecret": "ghcr-pull-secret",

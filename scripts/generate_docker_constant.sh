@@ -11,7 +11,7 @@ else
     
     # Default fallback
     if [ -z "$ORG" ]; then
-        ORG="onegrep"
+        ORG="toolprint"
     fi
 fi
 

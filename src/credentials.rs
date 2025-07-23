@@ -4,27 +4,14 @@ use keyring::Entry;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
+use std::process::Command;
 
-#[cfg(target_os = "macos")]
-use security_framework::passwords::get_generic_password;
-
-/// Trait for cross-platform credential access
-trait CredentialAccess {
-    async fn extract_credentials(&self) -> Result<String>;
-}
-
-/// macOS-specific credential access using Security framework
-#[cfg(target_os = "macos")]
-struct MacOSCredentialAccess {
-    service_name: String,
-    account_name: String,
-}
-
-/// Generic credential access for other platforms
-#[cfg(not(target_os = "macos"))]
-struct GenericCredentialAccess {
-    service_name: String,
-    account_name: String,
+/// Response from the keychain helper binary
+#[derive(Deserialize)]
+struct CredentialResponse {
+    success: bool,
+    credentials: Option<String>,
+    error: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -79,59 +66,52 @@ fn get_current_username() -> Result<String> {
 
 pub async fn extract_keychain_credentials() -> Result<String> {
     let username = get_current_username()?;
+    let service_name = "Claude Code-credentials";
 
-    #[cfg(target_os = "macos")]
-    {
-        let access = MacOSCredentialAccess {
-            service_name: "Claude Code-credentials".to_string(),
-            account_name: username,
-        };
-        access.extract_credentials().await
+    // Try to use the helper binary first if available
+    if let Ok(credentials) = try_helper_binary(service_name, &username).await {
+        return Ok(credentials);
     }
 
-    #[cfg(not(target_os = "macos"))]
-    {
-        let access = GenericCredentialAccess {
-            service_name: "Claude Code-credentials".to_string(),
-            account_name: username,
-        };
-        access.extract_credentials().await
-    }
+    // Fall back to direct keyring access
+    let entry = Entry::new(service_name, &username).context("Failed to create keychain entry")?;
+    entry
+        .get_password()
+        .context("Failed to retrieve password from keychain")
 }
 
-#[cfg(target_os = "macos")]
-async fn request_biometric_authentication() -> Result<()> {
-    use localauthentication_rs::{LAPolicy, LocalAuthentication};
+async fn try_helper_binary(service: &str, account: &str) -> Result<String> {
+    // Try to find the helper binary
+    let helper_paths = vec![
+        "claude-task-keychain-helper",                // In PATH
+        "./claude-task-keychain-helper",              // Current directory
+        "/usr/local/bin/claude-task-keychain-helper", // Common install location
+    ];
 
-    let local_auth = LocalAuthentication::new();
+    for helper_path in helper_paths {
+        let output = Command::new(helper_path)
+            .args(["extract", "--service", service, "--account", account])
+            .output();
 
-    // Check if biometric authentication is available
-    let policy = LAPolicy::DeviceOwnerAuthenticationWithBiometrics;
+        if let Ok(output) = output {
+            if output.status.success() {
+                let response: CredentialResponse = serde_json::from_slice(&output.stdout)
+                    .context("Failed to parse helper response")?;
 
-    if !local_auth.can_evaluate_policy(policy) {
-        return Err(anyhow::anyhow!(
-            "Biometric authentication not available on this device"
-        ));
+                if response.success {
+                    if let Some(credentials) = response.credentials {
+                        return Ok(credentials);
+                    }
+                }
+
+                if let Some(error) = response.error {
+                    return Err(anyhow::anyhow!("Helper error: {}", error));
+                }
+            }
+        }
     }
 
-    println!("🔐 Requesting biometric authentication (Touch ID/Face ID)...");
-
-    // Request biometric authentication
-    let success =
-        local_auth.evaluate_policy(policy, "Claude Code needs to access your credentials");
-
-    if success {
-        println!("✓ Biometric authentication successful");
-        Ok(())
-    } else {
-        Err(anyhow::anyhow!("Biometric authentication failed"))
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
-async fn request_biometric_authentication() -> Result<()> {
-    // Not implemented for other platforms
-    Ok(())
+    Err(anyhow::anyhow!("Keychain helper not found or failed"))
 }
 
 pub fn read_and_filter_claude_config(config_path: &str) -> Result<ClaudeConfig> {
@@ -369,45 +349,4 @@ async fn inspect_docker_volume_contents() -> Result<()> {
     }
 
     Ok(())
-}
-
-#[cfg(target_os = "macos")]
-impl CredentialAccess for MacOSCredentialAccess {
-    async fn extract_credentials(&self) -> Result<String> {
-        // First request biometric authentication
-        if let Err(e) = request_biometric_authentication().await {
-            println!("⚠️  Biometric authentication failed: {e}");
-            println!("   Falling back to keychain access without biometrics");
-        }
-
-        // Use Security framework for native macOS keychain access
-        match get_generic_password(&self.service_name, &self.account_name) {
-            Ok(password_data) => {
-                let password = String::from_utf8(password_data)
-                    .context("Failed to convert password data to string")?;
-                Ok(password)
-            }
-            Err(e) => {
-                // Fall back to keyring crate for compatibility
-                println!("⚠️  Security framework access failed: {e}");
-                println!("   Falling back to keyring crate");
-                let entry = Entry::new(&self.service_name, &self.account_name)
-                    .context("Failed to create keychain entry")?;
-                entry
-                    .get_password()
-                    .context("Failed to retrieve password from keychain")
-            }
-        }
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
-impl CredentialAccess for GenericCredentialAccess {
-    async fn extract_credentials(&self) -> Result<String> {
-        let entry = Entry::new(&self.service_name, &self.account_name)
-            .context("Failed to create keychain entry")?;
-        entry
-            .get_password()
-            .context("Failed to retrieve password from keychain")
-    }
 }

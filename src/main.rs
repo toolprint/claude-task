@@ -17,6 +17,7 @@ mod handle_config;
 mod mcp;
 pub mod permission;
 
+#[cfg(feature = "kube")]
 use claude_task::kube;
 use claude_task::worktree;
 use config::ExecutionEnvironment;
@@ -24,6 +25,7 @@ use permission::ApprovalToolPermission;
 use std::process::Command;
 
 #[derive(Debug)]
+#[allow(dead_code)]
 struct TaskRunConfig<'a> {
     prompt: &'a str,
     task_id: Option<String>,
@@ -145,6 +147,7 @@ enum SetupCommands {
     #[command(visible_alias = "d")]
     Docker,
     /// Setup Kubernetes environment (secrets and credentials)
+    #[cfg(feature = "kube")]
     #[command(visible_alias = "k")]
     Kubernetes,
 }
@@ -279,10 +282,12 @@ enum Commands {
 async fn run_claude_task(config: TaskRunConfig<'_>) -> Result<()> {
     match config.task_runner {
         ExecutionEnvironment::Docker => run_docker_task(config).await,
+        #[cfg(feature = "kube")]
         ExecutionEnvironment::Kubernetes => run_kube_task(config).await,
     }
 }
 
+#[cfg(feature = "kube")]
 async fn validate_kubernetes_access(context: &str) -> Result<()> {
     // Check if kubectl is available
     let kubectl_check = Command::new("kubectl")
@@ -324,6 +329,7 @@ async fn validate_kubernetes_access(context: &str) -> Result<()> {
     Ok(())
 }
 
+#[allow(dead_code)]
 fn get_git_remote_url(path: &Path) -> Result<String> {
     let output = Command::new("git")
         .args(["config", "--get", "remote.origin.url"])
@@ -346,6 +352,7 @@ fn get_git_remote_url(path: &Path) -> Result<String> {
 }
 
 /// Get GitHub token from environment or gh CLI
+#[allow(dead_code)]
 fn get_github_token() -> Option<String> {
     // First try environment variable
     if let Ok(token) = std::env::var("GITHUB_TOKEN") {
@@ -366,6 +373,7 @@ fn get_github_token() -> Option<String> {
     None
 }
 
+#[cfg(feature = "kube")]
 async fn run_kube_task(config: TaskRunConfig<'_>) -> Result<()> {
     let kube_config = config.kube_config.as_ref().ok_or_else(|| {
         anyhow::anyhow!("Kubernetes execution environment requires a kube_config")
@@ -1265,6 +1273,7 @@ async fn handle_docker_setup(
     Ok(())
 }
 
+#[cfg(feature = "kube")]
 async fn handle_kubernetes_setup(
     task_base_home_dir: &str,
     debug: bool,
@@ -1534,8 +1543,8 @@ async fn main() -> Result<()> {
             web_view_proxy_port,
             async_mode,
             execution_env,
-            kube_namespace,
-            kube_context,
+            kube_namespace: _,
+            kube_context: _,
             git_secret_name,
             git_secret_key,
         }) => {
@@ -1543,7 +1552,8 @@ async fn main() -> Result<()> {
             let exec_env = execution_env.as_ref().unwrap_or(&config.task_runner);
 
             // Override kubernetes config if needed
-            let mut kube_config_override = config.kube_config.clone();
+            let kube_config_override = config.kube_config.clone();
+            #[cfg(feature = "kube")]
             if exec_env == &ExecutionEnvironment::Kubernetes {
                 if let Some(ref mut kube_cfg) = kube_config_override {
                     if let Some(ref namespace) = kube_namespace {
@@ -1672,6 +1682,7 @@ async fn main() -> Result<()> {
                 )
                 .await?;
             }
+            #[cfg(feature = "kube")]
             SetupCommands::Kubernetes => {
                 handle_kubernetes_setup(
                     &config.paths.task_base_home_dir,

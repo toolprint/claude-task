@@ -226,9 +226,14 @@ pub async fn handle_config_command(
                 r
             } else {
                 println!("Select task runner:");
+                #[cfg(feature = "kube")]
                 let options = vec!["Docker", "Kubernetes"];
+                #[cfg(not(feature = "kube"))]
+                let options = vec!["Docker"];
+
                 let current_idx = match config.task_runner {
                     ExecutionEnvironment::Docker => 0,
+                    #[cfg(feature = "kube")]
                     ExecutionEnvironment::Kubernetes => 1,
                 };
 
@@ -239,6 +244,7 @@ pub async fn handle_config_command(
 
                 match selection {
                     0 => ExecutionEnvironment::Docker,
+                    #[cfg(feature = "kube")]
                     1 => ExecutionEnvironment::Kubernetes,
                     _ => unreachable!(),
                 }
@@ -254,6 +260,7 @@ pub async fn handle_config_command(
             println!("✅ Task runner updated: {old_runner:?} → {new_runner:?}");
 
             // Show additional setup instructions if switching to Kubernetes
+            #[cfg(feature = "kube")]
             if new_runner == ExecutionEnvironment::Kubernetes
                 && old_runner != ExecutionEnvironment::Kubernetes
             {

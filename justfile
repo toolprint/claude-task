@@ -322,6 +322,193 @@ pre-commit:
     echo "🎉 SUCCESS: All pre-commit checks passed!"
     echo "✅ Code is ready for commit"
 
+# =====================================
+# Dagger CI/CD Commands
+# =====================================
+
+# Run Dagger CI pipeline locally
+[group('dagger')]
+dagger-ci:
+    @echo "🚀 Running Dagger CI pipeline..."
+    dagger call ci --source .
+
+# Run CI and then build Docker locally
+[group('dagger')]
+ci-and-docker:
+    @echo "🚀 Running CI pipeline..."
+    @just dagger-ci
+    @echo ""
+    @echo "🐳 Building Docker images..."
+    @just docker-bake
+    @echo ""
+    @echo "✅ CI and Docker build completed!"
+
+# Run Dagger format check
+[group('dagger')]
+dagger-format:
+    @echo "🔍 Checking code formatting with Dagger..."
+    dagger call format --source .
+
+# Run Dagger lint
+[group('dagger')]
+dagger-lint:
+    @echo "📋 Running clippy with Dagger..."
+    dagger call lint --source .
+
+# Run Dagger tests
+[group('dagger')]
+dagger-test platform="linux/amd64":
+    @echo "🧪 Running tests on {{ platform }} with Dagger..."
+    dagger call test --source . --platform {{ platform }}
+
+# Run Dagger coverage
+[group('dagger')]
+dagger-coverage:
+    @echo "📊 Generating coverage report with Dagger..."
+    dagger call coverage --source . export --path ./tarpaulin-report.html
+    @echo "✅ Coverage report saved to tarpaulin-report.html"
+
+# Build with Dagger
+[group('dagger')]
+dagger-build platform="linux/amd64":
+    @echo "🔨 Building for {{ platform }} with Dagger..."
+    @mkdir -p ./build
+    dagger call build --source . --platform {{ platform }} export --path ./build/claude-task-debug-{{ replace(platform, "/", "-") }}
+
+# Build release with Dagger
+[group('dagger')]
+dagger-build-release platform="linux/amd64":
+    @echo "📦 Building release for {{ platform }} with Dagger..."
+    @mkdir -p ./build
+    dagger call build-release --source . --platform {{ platform }} export --path ./build/claude-task-release-{{ replace(platform, "/", "-") }}
+
+# Build releases for all platforms using Dagger with zigbuild (parallel execution)
+[group('dagger')]
+dagger-release version="v0.1.0":
+    @echo "🚀 Building all platform releases in parallel with Dagger + zigbuild..."
+    @mkdir -p ./release-artifacts
+    dagger call release-zigbuild --source . --version {{ version }} export --path ./release-artifacts/
+    @echo "✅ All platform releases built successfully!"
+    @echo "📦 Release artifacts:"
+    @ls -la ./release-artifacts/
+
+# Build Docker image using Dagger
+[group('dagger')]
+dagger-docker registry="ghcr.io" version="v0.1.0" docker-tag="dev" push="false":
+    @echo "🐳 Building Docker image with Dagger..."
+    dagger call build-docker --source . --registry {{ registry }} --github-org {{ github_org }} --version {{ version }} --docker-tag {{ docker-tag }} --push {{ push }}
+
+# Run complete release pipeline (binaries + Docker) using Dagger
+[group('dagger')]
+dagger-release-all version="v0.1.0" docker-tag="release" push-docker="false":
+    @echo "🚀 Running complete release pipeline with Dagger..."
+    @mkdir -p ./release-artifacts
+    dagger call release --source . --version {{ version }} --github-org {{ github_org }} --docker-tag {{ docker-tag }} --push-docker {{ push-docker }} export --path ./release-artifacts/
+    @echo "✅ Complete release pipeline finished!"
+    @echo "📦 Release artifacts:"
+    @ls -la ./release-artifacts/
+
+
+# =====================================
+# Zigbuild Cross-Compilation Commands
+# =====================================
+
+# Build all platforms using cargo-zigbuild Docker image
+[group('zigbuild')]
+zigbuild-release version="v0.1.0":
+    #!/usr/bin/env bash
+    echo "🚀 Building releases for all platforms using cargo-zigbuild..."
+    mkdir -p ./release-artifacts
+    
+    # Generate docker constants before building
+    ./scripts/generate_docker_constant.sh
+    
+    # Build all platforms in a single container to maintain state
+    docker run --rm -v $(pwd):/io -w /io ghcr.io/rust-cross/cargo-zigbuild:latest \
+        sh -c '
+            echo "📦 Adding Rust targets..." && \
+            rustup target add x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu x86_64-apple-darwin aarch64-apple-darwin x86_64-pc-windows-gnu && \
+            echo "🔨 Building Linux x86_64..." && \
+            cargo zigbuild --release --target x86_64-unknown-linux-gnu --no-default-features && \
+            echo "🔨 Building Linux ARM64..." && \
+            cargo zigbuild --release --target aarch64-unknown-linux-gnu --no-default-features && \
+            echo "🔨 Building macOS x86_64..." && \
+            cargo zigbuild --release --target x86_64-apple-darwin --features macos-keychain && \
+            echo "🔨 Building macOS ARM64..." && \
+            cargo zigbuild --release --target aarch64-apple-darwin --features macos-keychain && \
+            echo "🔨 Building macOS Universal Binary..." && \
+            cargo zigbuild --release --target universal2-apple-darwin --features macos-keychain && \
+            echo "🔨 Building Windows x86_64..." && \
+            cargo zigbuild --release --target x86_64-pc-windows-gnu --no-default-features
+        '
+    
+    # Package all builds
+    echo "📦 Packaging release artifacts..."
+    
+    # Linux x86_64
+    tar czf ./release-artifacts/claude-task-{{ version }}-x86_64-unknown-linux-gnu.tar.gz \
+        -C target/x86_64-unknown-linux-gnu/release claude-task \
+        -C "$(pwd)" README.md
+    
+    # Linux ARM64
+    tar czf ./release-artifacts/claude-task-{{ version }}-aarch64-unknown-linux-gnu.tar.gz \
+        -C target/aarch64-unknown-linux-gnu/release claude-task \
+        -C "$(pwd)" README.md
+    
+    # macOS x86_64
+    tar czf ./release-artifacts/claude-task-{{ version }}-x86_64-apple-darwin.tar.gz \
+        -C target/x86_64-apple-darwin/release claude-task \
+        -C "$(pwd)" README.md
+    
+    # macOS ARM64
+    tar czf ./release-artifacts/claude-task-{{ version }}-aarch64-apple-darwin.tar.gz \
+        -C target/aarch64-apple-darwin/release claude-task \
+        -C "$(pwd)" README.md
+    
+    # macOS Universal
+    tar czf ./release-artifacts/claude-task-{{ version }}-universal2-apple-darwin.tar.gz \
+        -C target/universal2-apple-darwin/release claude-task \
+        -C "$(pwd)" README.md
+    
+    # Windows x86_64 (use zip for Windows convention)
+    zip -j ./release-artifacts/claude-task-{{ version }}-x86_64-pc-windows-gnu.zip \
+        target/x86_64-pc-windows-gnu/release/claude-task.exe \
+        README.md
+    
+    echo "✅ All platform releases built successfully!"
+    echo "📦 Release artifacts:"
+    ls -la ./release-artifacts/
+
+# Test zigbuild setup for a single platform
+[group('zigbuild')]
+zigbuild-test target="x86_64-apple-darwin":
+    #!/usr/bin/env bash
+    echo "🧪 Testing cargo-zigbuild for {{ target }}..."
+    
+    # Generate docker constants before building
+    ./scripts/generate_docker_constant.sh
+    
+    # Determine feature flags based on target
+    if [[ "{{ target }}" == *"apple-darwin"* ]]; then
+        features="--features macos-keychain"
+    else
+        features="--no-default-features"
+    fi
+    
+    docker run --rm -v $(pwd):/io -w /io ghcr.io/rust-cross/cargo-zigbuild:latest \
+        sh -c "rustup target add {{ target }} && cargo zigbuild --release --target {{ target }} $features"
+    
+    # Determine binary name based on target
+    if [[ "{{ target }}" == *"windows"* ]]; then
+        binary_name="claude-task.exe"
+    else
+        binary_name="claude-task"
+    fi
+    
+    echo "✅ Build successful! Binary at: target/{{ target }}/release/$binary_name"
+
+
+
 # Task Management Commands
 
 # Run a Claude task Example: `just task "Analyze the codebase" --debug`

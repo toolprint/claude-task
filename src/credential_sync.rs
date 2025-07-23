@@ -226,22 +226,13 @@ impl CredentialSyncManager {
     }
 
     fn is_process_running(&self, pid: u32) -> bool {
-        // Platform-specific process checking
-        #[cfg(target_os = "macos")]
-        {
-            use std::process::Command;
-            Command::new("kill")
-                .args(["-0", &pid.to_string()])
-                .output()
-                .map(|output| output.status.success())
-                .unwrap_or(false)
-        }
-
-        #[cfg(not(target_os = "macos"))]
-        {
-            // For other platforms, check if /proc/{pid} exists
-            Path::new(&format!("/proc/{}", pid)).exists()
-        }
+        // Use kill -0 to check if process exists (works on all Unix-like systems)
+        use std::process::Command;
+        Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .output()
+            .map(|output| output.status.success())
+            .unwrap_or(false)
     }
 
     fn calculate_hash(&self, content: &str) -> String {

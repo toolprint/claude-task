@@ -37,3 +37,11 @@ docker/target/
 # ht-mcp binaries (keep .gitkeep only)
 docker/ht-mcp-release/*
 !docker/ht-mcp-release/.gitkeep
+
+# Dagger
+.dagger/go.sum
+.dagger/dagger.gen.go
+.dagger/internal/
+
+# Release artifacts directory
+release-artifacts/

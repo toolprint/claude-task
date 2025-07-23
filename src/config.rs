@@ -12,6 +12,7 @@ include!("generated_constants.rs");
 #[serde(rename_all = "camelCase")]
 pub enum ExecutionEnvironment {
     Docker,
+    #[cfg(feature = "kube")]
     Kubernetes,
 }
 
@@ -181,6 +182,7 @@ impl Config {
     }
 
     /// Generate a unique namespace suffix based on machine metadata
+    #[allow(dead_code)]
     pub fn generate_namespace_suffix() -> String {
         let mut hasher = Sha256::new();
 
@@ -189,17 +191,14 @@ impl Config {
             hasher.update(hostname.to_string_lossy().as_bytes());
         }
 
-        // Add MAC addresses
-        #[cfg(target_os = "macos")]
-        {
-            if let Ok(output) = Command::new("ifconfig").output() {
+        // Add network interface information for uniqueness
+        // Try both commands as they may be available on different systems
+        if let Ok(output) = Command::new("ifconfig").output() {
+            if output.status.success() {
                 hasher.update(&output.stdout);
             }
-        }
-
-        #[cfg(target_os = "linux")]
-        {
-            if let Ok(output) = Command::new("ip").args(&["link", "show"]).output() {
+        } else if let Ok(output) = Command::new("ip").args(["link", "show"]).output() {
+            if output.status.success() {
                 hasher.update(&output.stdout);
             }
         }
@@ -218,6 +217,7 @@ impl Config {
     }
 
     /// Get the current kubectl context
+    #[allow(dead_code)]
     pub fn get_current_kube_context() -> Option<String> {
         Command::new("kubectl")
             .args(["config", "current-context"])
@@ -391,6 +391,7 @@ impl Config {
         }
 
         // Validate Kubernetes config if task runner is Kubernetes
+        #[cfg(feature = "kube")]
         if let ExecutionEnvironment::Kubernetes = self.task_runner {
             if let Some(kube_config) = &self.kube_config {
                 // Context and namespace can be None (will be detected/generated)

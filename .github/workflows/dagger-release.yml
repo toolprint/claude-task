@@ -37,10 +37,14 @@ jobs:
           dagger version
 
       - name: Run CI pipeline first
+        env:
+          DAGGER_CLOUD_TOKEN: ${{ secrets.DAGGER_CLOUD_TOKEN }}
         run: |
           dagger call ci --source .
 
       - name: Build all platform releases in parallel
+        env:
+          DAGGER_CLOUD_TOKEN: ${{ secrets.DAGGER_CLOUD_TOKEN }}
         run: |
           echo "🚀 Building all platforms in parallel using Dagger..."
           dagger call release-zigbuild --source . --version ${{ steps.get_version.outputs.VERSION }} export --path ./release-artifacts/

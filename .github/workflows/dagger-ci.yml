@@ -25,11 +25,15 @@ jobs:
           dagger version
 
       - name: Run CI pipeline
+        env:
+          DAGGER_CLOUD_TOKEN: ${{ secrets.DAGGER_CLOUD_TOKEN }}
         run: |
           dagger call ci --source .
 
       - name: Export coverage report
         if: always()
+        env:
+          DAGGER_CLOUD_TOKEN: ${{ secrets.DAGGER_CLOUD_TOKEN }}
         run: |
           dagger call coverage --source . export --path ./tarpaulin-report.html || true
 

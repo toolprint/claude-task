@@ -103,6 +103,8 @@ func (m *ClaudeTask) Coverage(ctx context.Context, source *dagger.Directory) (*d
 			"--output-dir", "/coverage",
 			"--skip-clean",
 			"--target-dir", "/tmp/tarpaulin-target",
+			"--jobs", "1", // Limit parallelism to reduce memory usage
+			"--no-default-features", // Disable default features to reduce compilation
 			"--", "--skip", "mcp", // Skip MCP tests that need special setup
 		}, dagger.ContainerWithExecOpts{
 			InsecureRootCapabilities: true,

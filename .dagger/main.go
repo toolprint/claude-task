@@ -92,10 +92,9 @@ func (m *ClaudeTask) Test(
 
 // Coverage generates code coverage report using tarpaulin
 func (m *ClaudeTask) Coverage(ctx context.Context, source *dagger.Directory) (*dagger.File, error) {
-	container := dag.Container().
-		From("xd009642/tarpaulin:0.27.3").
-		WithDirectory("/src", source).
-		WithWorkdir("/src")
+	// Use our Rust container and install tarpaulin
+	container := m.rustContainer(source).
+		WithExec([]string{"cargo", "install", "cargo-tarpaulin", "--version", "0.31.2"})
 	
 	return container.
 		WithExec([]string{
